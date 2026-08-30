@@ -83,7 +83,7 @@ jobs:
 
       - name: Configure standalone daemon repository
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B "$RUNNER_TEMP/photospider-daemon-build" -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/photospider-prefix" \
             -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/daemon-prefix" \
@@ -92,13 +92,15 @@ jobs:
             -DBUILD_TESTING=ON
 
       - name: Build standalone daemon repository
-        run: cmake --build build -j 2
+        run: cmake --build "$RUNNER_TEMP/photospider-daemon-build" -j 2
 
       - name: Run maintained tests
-        run: ctest --test-dir build --output-on-failure --timeout 180
+        run: >-
+          ctest --test-dir "$RUNNER_TEMP/photospider-daemon-build"
+          --output-on-failure --timeout 180
 
       - name: Install standalone package
-        run: cmake --install build
+        run: cmake --install "$RUNNER_TEMP/photospider-daemon-build"
 
       - name: Run frozen four-cell compatibility gate
         run: |

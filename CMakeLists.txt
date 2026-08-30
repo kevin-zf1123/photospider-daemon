@@ -186,6 +186,9 @@ install(FILES
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  find_program(PHOTOSPIDER_DAEMON_OPENSSL_EXECUTABLE
+    NAMES openssl
+    REQUIRED)
   include(GoogleTest)
 
   set(PHOTOSPIDER_DAEMON_TEST_RUNTIME_DIR "${CMAKE_BINARY_DIR}/tests")
@@ -226,7 +229,68 @@ if(BUILD_TESTING)
   target_link_libraries(lifecycle_op_plugin PRIVATE
     Photospider::operation_plugin_sdk)
 
+  set(PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_DIR
+    "${CMAKE_BINARY_DIR}/generated/plugin_trust")
+  set(PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_MANIFEST
+    "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_DIR}/manifest.txt")
+  set(PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_SIGNATURE
+    "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_DIR}/signature.hex")
+  set(PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_BAD_SIGNATURE
+    "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_DIR}/bad-signature.hex")
+  set(PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_ENVIRONMENT
+    "PHOTOSPIDER_PLUGIN_TRUST_MANIFEST=${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_MANIFEST}"
+    "PHOTOSPIDER_PLUGIN_TRUST_SIGNATURE=${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_SIGNATURE}"
+    "PHOTOSPIDER_PLUGIN_TRUST_PUBLIC_KEY=${PROJECT_SOURCE_DIR}/tests/fixtures/trust/test_ed25519_public_key.pem")
+
+  # Generate a real signed trust tuple for the standalone repository's two
+  # process-native plugin fixtures. The private key is maintained test data and
+  # neither it nor the generated bundle is part of the installed package.
+  add_custom_target(photospider_daemon_test_plugin_trust_bundle
+    COMMAND "${Python3_EXECUTABLE}" -B
+      "${PROJECT_SOURCE_DIR}/tests/support/generate_plugin_trust_bundle.py"
+      --openssl "${PHOTOSPIDER_DAEMON_OPENSSL_EXECUTABLE}"
+      --private-key
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/trust/test_ed25519_private_key.pem"
+      --manifest "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_MANIFEST}"
+      --signature "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_SIGNATURE}"
+      --bad-signature
+        "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_BAD_SIGNATURE}"
+      --trust-root photospider-maintained-test-root
+      --entry operation 11111111111111111111111111111111 1
+        "$<TARGET_FILE:lifecycle_op_plugin>"
+      --entry policy 22222222222222222222222222222222 1
+        "$<TARGET_FILE:test_policy_plugin>"
+    BYPRODUCTS
+      "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_MANIFEST}"
+      "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_SIGNATURE}"
+      "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_BAD_SIGNATURE}"
+    DEPENDS
+      "${PROJECT_SOURCE_DIR}/tests/support/generate_plugin_trust_bundle.py"
+      "${PROJECT_SOURCE_DIR}/tests/fixtures/trust/test_ed25519_private_key.pem"
+      lifecycle_op_plugin
+      test_policy_plugin
+    VERBATIM)
+
+  # GoogleTest discovery must observe the same immutable trust tuple as the
+  # registered test commands. TEST_LAUNCHER is native from CMake 3.29 onward;
+  # CROSSCOMPILING_EMULATOR is its portable pre-3.29 launcher hook.
+  function(photospider_daemon_enable_plugin_trust_test_environment TARGET_NAME)
+    set(PLUGIN_TRUST_TEST_LAUNCHER
+      "${CMAKE_COMMAND}"
+      -E
+      env
+      ${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_ENVIRONMENT})
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+      set_property(TARGET ${TARGET_NAME} PROPERTY TEST_LAUNCHER
+        ${PLUGIN_TRUST_TEST_LAUNCHER})
+    else()
+      set_property(TARGET ${TARGET_NAME} PROPERTY CROSSCOMPILING_EMULATOR
+        ${PLUGIN_TRUST_TEST_LAUNCHER})
+    endif()
+  endfunction()
+
   function(add_photospider_daemon_test TARGET_NAME SOURCE_PATH)
+    cmake_parse_arguments(TEST "PLUGIN_TRUST" "" "" ${ARGN})
     add_executable(${TARGET_NAME} "${SOURCE_PATH}")
     set_target_properties(${TARGET_NAME} PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${PHOTOSPIDER_DAEMON_TEST_RUNTIME_DIR}")
@@ -244,6 +308,11 @@ if(BUILD_TESTING)
       nlohmann_json::nlohmann_json
       Threads::Threads
       ${CMAKE_DL_LIBS})
+    if(TEST_PLUGIN_TRUST)
+      photospider_daemon_enable_plugin_trust_test_environment(${TARGET_NAME})
+      add_dependencies(${TARGET_NAME}
+        photospider_daemon_test_plugin_trust_bundle)
+    endif()
     gtest_discover_tests(${TARGET_NAME}
       WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
       DISCOVERY_TIMEOUT 30
@@ -251,7 +320,8 @@ if(BUILD_TESTING)
   endfunction()
 
   add_photospider_daemon_test(test_ipc_protocol
-    tests/unit/test_ipc_protocol.cpp)
+    tests/unit/test_ipc_protocol.cpp
+    PLUGIN_TRUST)
   target_compile_definitions(test_ipc_protocol PRIVATE
     PS_TEST_POLICY_PLUGIN_PATH="$<TARGET_FILE:test_policy_plugin>"
     PS_TEST_OP_PLUGIN_DIR="$<TARGET_FILE_DIR:lifecycle_op_plugin>")
@@ -282,7 +352,8 @@ if(BUILD_TESTING)
     Threads::Threads)
 
   add_photospider_daemon_test(test_ipc_daemon
-    tests/integration/test_ipc_daemon.cpp)
+    tests/integration/test_ipc_daemon.cpp
+    PLUGIN_TRUST)
   target_compile_definitions(test_ipc_daemon PRIVATE
     PS_PHOTOSPIDERD_PATH="$<TARGET_FILE:photospiderd>"
     PS_IPC_OUTPUT_FIXTURE_DAEMON_PATH="$<TARGET_FILE:ipc_output_fixture_daemon>"
