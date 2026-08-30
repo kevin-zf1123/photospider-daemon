@@ -33,7 +33,6 @@
 #include <utility>
 #include <vector>
 
-#include "core/pending_value.hpp"
 #include "ipc/client_collection_budget.hpp"
 #include "ipc/client_interrupt_access.hpp"
 #include "ipc/codec.hpp"
@@ -949,25 +948,6 @@ NamedValueResult make_protocol_values(std::size_t payload_bytes,
       std::move(descriptor), std::nullopt, StridedLayout{{1}},
       std::vector<std::byte>(payload_bytes, fill));
   return NamedValueResult({NamedValue{"image", std::move(value)}});
-}
-
-/**
- * @brief Builds one terminally unreadable named Value result.
- * @return Result whose producer abandonment leaves its Value Failed.
- * @throws Pending Value publication, result validation, or allocation failures
- *         unchanged.
- * @note Construction explicitly permits non-Ready metadata so the router can
- *       prove artifact capture fails closed after Host success.
- */
-NamedValueResult make_failed_protocol_values() {
-  DenseTensorDescriptor descriptor{{1U},
-                                   ElementSemantics::UnsignedInteger,
-                                   StorageEncoding{8U}};
-  PendingValuePublication pending =
-      PendingValuePublisher::allocate_cpu_dense_tensor(
-          std::move(descriptor), std::nullopt, StridedLayout{{1}}, 1U);
-  return NamedValueResult({NamedValue{"image", std::move(pending.value)}},
-                          false);
 }
 
 /**
@@ -1915,31 +1895,6 @@ TEST_F(HostRoutedGraphStateProtocolTest,
   EXPECT_EQ(immutable["result"], failed["result"]);
   EXPECT_EQ(host_.call_count("compute.submit"), 1U);
   ASSERT_TRUE(route("compute.release", Json{{"compute_id", failed_id}})
-                  .contains("result"));
-
-  host_.set_compute_values(make_failed_protocol_values());
-  host_.reset_invocations();
-  submitted = route("compute.submit",
-                    valid_compute_submit_params(session_id_, "values"));
-  ASSERT_TRUE(submitted.contains("result")) << submitted.dump();
-  const std::string values_failure_id =
-      submitted["result"]["compute_id"].get<std::string>();
-  Json values_failed = wait_for_compute_terminal(values_failure_id);
-  ASSERT_TRUE(values_failed.contains("result")) << values_failed.dump();
-  EXPECT_EQ(values_failed["result"]["state"], "failed");
-  EXPECT_EQ(values_failed["result"]["status"]["domain"], "daemon");
-  EXPECT_EQ(values_failed["result"]["status"]["name"], "internal_error");
-  EXPECT_TRUE(values_failed["result"]["output"].is_null());
-  const auto failed_value_calls = host_.invocations();
-  ASSERT_EQ(failed_value_calls.size(), 1U);
-  EXPECT_TRUE(failed_value_calls.front().values_compute);
-  EXPECT_EQ(host_.call_count("compute.submit"), 1U);
-  const Json values_failure_result =
-      route("compute.result", Json{{"compute_id", values_failure_id}});
-  ASSERT_TRUE(values_failure_result.contains("result"))
-      << values_failure_result.dump();
-  EXPECT_EQ(values_failure_result["result"], values_failed["result"]);
-  ASSERT_TRUE(route("compute.release", Json{{"compute_id", values_failure_id}})
                   .contains("result"));
 
   host_.set_compute_values(make_protocol_values(4U));

@@ -1,0 +1,8 @@
+- id: 1
+  name: interop_constant
+  type: image_generator
+  subtype: constant
+  parameters:
+    width: 6
+    height: 4
+    value: 128

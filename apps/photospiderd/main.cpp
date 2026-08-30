@@ -294,7 +294,8 @@ bool parse_options(int argc, char** argv, CommandLineOptions* options,
 void print_usage() {
   std::cout
       << "Usage: photospiderd [--socket ABSOLUTE_PATH]\n"
-         "Runs the version 1 local Unix socket daemon in the foreground.\n"
+         "Runs the protocol version 2 local Unix socket daemon in the "
+         "foreground.\n"
          "Capability boundary: foreground same-user local Unix-domain sidecar "
          "with one embedded Host, not a system service, multi-user service, "
          "remote endpoint, or TCP server.\n";

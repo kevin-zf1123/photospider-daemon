@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-interop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            libutf8proc-dev \
+            libyaml-cpp-dev \
+            libopencv-dev \
+            nlohmann-json3-dev \
+            libgtest-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install \
+            cmake \
+            ninja \
+            pkg-config \
+            openssl@3 \
+            utf8proc \
+            yaml-cpp \
+            opencv \
+            nlohmann-json \
+            googletest
+
+      - name: Build and install frozen Photospider dependency
+        env:
+          PHOTOSPIDER_REF: f9fc3aefce45072c6fc6a856da11f20ff16ba00a
+        run: |
+          git clone https://github.com/kevin-zf1123/photospider.git \
+            "$RUNNER_TEMP/photospider"
+          git -C "$RUNNER_TEMP/photospider" checkout --detach \
+            "$PHOTOSPIDER_REF"
+          cmake -S "$RUNNER_TEMP/photospider" \
+            -B "$RUNNER_TEMP/photospider-build" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/photospider-prefix" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_TESTING=OFF \
+            -DPHOTOSPIDER_ENABLE_OPENCV=ON \
+            -DPHOTOSPIDER_ENABLE_YAML=ON \
+            -DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PROVIDER=ON \
+            -DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PLUGINS=OFF \
+            -DPHOTOSPIDER_BUILD_GRAPH_CLI=OFF \
+            -DPHOTOSPIDER_BUILD_OPENEXR_DEEP_PROVIDER=OFF \
+            -DPHOTOSPIDER_BUILD_SINGLE_TENANT_JOB=OFF \
+            -DPHOTOSPIDER_BUILD_IPC=ON
+          cmake --build "$RUNNER_TEMP/photospider-build" -j 2
+          cmake --install "$RUNNER_TEMP/photospider-build"
+          test "$(git -C "$RUNNER_TEMP/photospider" rev-parse HEAD)" = \
+            "$PHOTOSPIDER_REF"
+
+      - name: Configure standalone daemon repository
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/photospider-daemon-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/photospider-prefix" \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/daemon-prefix" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DPHOTOSPIDER_DAEMON_DEPENDENCY_LIBDIR="$RUNNER_TEMP/photospider-prefix/lib" \
+            -DBUILD_TESTING=ON
+
+      - name: Build standalone daemon repository
+        run: cmake --build "$RUNNER_TEMP/photospider-daemon-build" -j 2
+
+      - name: Run maintained tests
+        run: >-
+          ctest --test-dir "$RUNNER_TEMP/photospider-daemon-build"
+          --output-on-failure --timeout 180
+
+      - name: Install standalone package
+        run: cmake --install "$RUNNER_TEMP/photospider-daemon-build"
+
+      - name: Run frozen four-cell compatibility gate
+        run: |
+          python3 tools/run_frozen_compatibility_gate.py \
+            --source "$GITHUB_WORKSPACE" \
+            --old-photospider-dir "$RUNNER_TEMP/photospider-prefix/lib/cmake/Photospider" \
+            --new-photospider-daemon-dir "$RUNNER_TEMP/daemon-prefix/lib/cmake/PhotospiderDaemon" \
+            --old-daemon "$RUNNER_TEMP/photospider-prefix/bin/photospiderd" \
+            --new-daemon "$RUNNER_TEMP/daemon-prefix/bin/photospiderd" \
+            --work "$RUNNER_TEMP/four-cell" \
+            --cmake cmake \
+            --generator Ninja \
+            --config RelWithDebInfo
+
+      - name: Audit ownership and exported paths
+        run: |
+          test -z "$(find . -path ./.git -prune -o \
+            -path './src/lib/server*' -print -o \
+            -path './apps/photospider_worker*' -print)"
+          ! grep -R -n --exclude-dir=.git --exclude-dir=build \
+            '/src/lib\|photospider-daemon/src/lib' \
+            "$RUNNER_TEMP/daemon-prefix/lib/cmake/PhotospiderDaemon"

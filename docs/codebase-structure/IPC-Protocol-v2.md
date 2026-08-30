@@ -6,13 +6,21 @@ this document defines the long-lived product behavior.
 
 ## Products and Scope
 
-When `CMAKE_SYSTEM_NAME` is exactly `Darwin` or `Linux`,
-`PHOTOSPIDER_BUILD_IPC` defaults to `ON` and builds:
+This repository is the sole current source, package, documentation, and test
+owner for the IPC v2 product. When `CMAKE_SYSTEM_NAME` is exactly `Darwin` or
+`Linux`, its standalone CMake build produces:
 
-- `photospider_ipc_client`, an installed static library exported as
-  `Photospider::photospider_ipc_client`;
-- `photospider_ipc_server_internal`, a non-installed server/router library;
+- `photospider_daemon_client`, an installed static library exported as
+  `PhotospiderDaemon::client`;
+- `photospider_daemon_server_internal`, a non-installed server/router library;
 - `photospiderd`, an installed foreground executable.
+
+The client links the installed `Photospider::operation_runtime` and
+`Threads::Threads` targets publicly; this is its real static-library link
+closure. It does not link the complete embedded kernel. `photospiderd`
+privately links `Photospider::photospider` from an installed Photospider
+package. The build uses no Photospider submodule, sibling checkout include, or
+private kernel header. Private codec/router/server targets are not exported.
 
 The current daemon capability profile is a same-user local workstation
 sidecar. It listens only on a protected Unix-domain socket, and its process
@@ -21,7 +29,7 @@ It is not a background system service, multi-user or multi-tenant service,
 remote endpoint, or TCP server. Those profiles require a separate transport,
 identity, authentication/authorization, isolation, and lifecycle design.
 
-[ADR 0011](../adr/0011-server-control-plane-workers-and-plugin-runtimes-are-separate-security-domains.md)
+[ADR 0011 in the frozen Photospider baseline](https://github.com/kevin-zf1123/photospider/blob/full-stack-archive-2026-08-30/docs/adr/0011-server-control-plane-workers-and-plugin-runtimes-are-separate-security-domains.md)
 now fixes that future design as a separate network control plane, worker
 manager, one constrained worker per Job attempt, artifact data plane, and
 isolated untrusted CPU-plugin runtime. It does not extend this protocol or turn
@@ -30,7 +38,7 @@ methods, or private `OutputStore` into server authentication, tenant authority,
 durable Job identity, or durable artifact authority.
 
 Issues #99, #100, and #105 now provide a separate source-private
-[single-tenant Job vertical](../kernel-architecture/Single-Tenant-Job-Vertical.md)
+[single-tenant Job vertical in the frozen Photospider baseline](https://github.com/kevin-zf1123/photospider/blob/full-stack-archive-2026-08-30/docs/kernel-architecture/Single-Tenant-Job-Vertical.md)
 for canonical JobSpec, tenant quota, durable Job/artifact recovery, explicit
 retry/checkpoint identity, one fresh process per attempt, and separated worker
 control/data transport. It is linked only through an internal CMake target,
@@ -78,24 +86,20 @@ The public client headers are `photospider/ipc/protocol.hpp`,
 `photospider/ipc/client.hpp`, and `photospider/ipc/host.hpp`. They expose typed
 owned values plus the complete Host factory and no JSON type, socket descriptor,
 `sockaddr_un`, backend model, runtime service, or mutable backend ownership. The
-client library does not link the `photospider` backend.
-An installed IPC-only consumer selects the component explicitly:
+client library does not link the complete `photospider` backend.
+An installed client consumer finds this package explicitly:
 
 ```cmake
-find_package(Photospider CONFIG REQUIRED COMPONENTS ipc_client)
-target_link_libraries(app PRIVATE Photospider::photospider_ipc_client)
+find_package(PhotospiderDaemon CONFIG REQUIRED)
+target_link_libraries(app PRIVATE PhotospiderDaemon::client)
 ```
 
-That component resolves only `Threads`. Omitting `COMPONENTS`, or requesting
-`COMPONENTS embedded`, preserves the embedded package behavior and resolves
-Threads, OpenCV, `yaml-cpp`, and the Apple Metal/Foundation frameworks when
-applicable. A required unknown component fails package discovery; a required
-`ipc_client` component also fails when the producer was built with IPC disabled.
-An optional component that is unavailable or unknown remains not-found without
-invalidating an otherwise satisfied package request; in particular, a required
-IPC-only request may name optional `embedded` while backend discovery is
-disabled. When IPC is disabled, neither its target nor its public headers are installed.
-Forcing IPC on for any other CMake system name fails configuration.
+`PhotospiderDaemonConfig.cmake` resolves `Threads` and the installed
+`Photospider` `operation_runtime` component before importing the client. The
+standalone producer separately requires the installed `embedded`,
+`operation_runtime`, `operation_plugin_sdk`, and `policy_sdk` targets so it can
+build the executable and maintained fixtures. On any other CMake system name,
+configuration fails explicitly instead of advertising a fake daemon.
 
 `daemon.version.methods` is sourced from one centralized table shared by
 metadata and pre-dispatch admission. Independent route-family matchers keep an
@@ -1570,33 +1574,47 @@ status. There is no protocol shutdown method and no daemonizing fork.
 Focused local commands are:
 
 ```bash
-cmake -S . -B build -DPHOTOSPIDER_BUILD_IPC=ON -DBUILD_TESTING=ON
-cmake --build build --target photospider_ipc_client \
-  photospider_ipc_server_internal photospiderd test_ipc_protocol test_ipc_host \
+cmake -S . -B build -DBUILD_TESTING=ON \
+  -DCMAKE_PREFIX_PATH=/absolute/photospider-prefix \
+  -DPHOTOSPIDER_DAEMON_DEPENDENCY_LIBDIR=/absolute/photospider-prefix/lib
+cmake --build build --target photospider_daemon_client \
+  photospider_daemon_server_internal photospiderd test_ipc_protocol test_ipc_host \
   test_compute_request_registry test_collection_snapshot_registry \
-  test_output_store test_event_stream_boundaries test_ipc_daemon \
-  public_header_self_containment -j
-ctest --test-dir build --output-on-failure \
-  -R '^(FrameCodec|ProtocolEnvelope|IntegerCodec|ProtocolErrors|ProtocolParams|ProtocolGraphLoad|ProtocolGraphClose|ProtocolOperationPlugins|HostRoutedGraphStateProtocolTest|StableInspectionPagingProtocolTest|InspectionJson|SessionRegistry|ComputeRequestRegistry|CollectionSnapshotRegistry|OutputStore|ComputeEventRing|ExecutionTraceRing|UnixSocketConnect|ClientLifecycle|ClientSurface|ClientCollectionAggregation|ClientJobValidation|ClientRetryPolicy|ClientResultValidation|IpcHost|IpcDaemon|IpcDaemonOperationPlugins|IpcDaemonPolicy|IpcDaemonExecution|IpcObservationFixtureDaemon|StaticProductConsumerSmoke|IpcDisabledInstallSmoke|PublicHeaderSelfContainment)'
+  test_output_store test_ipc_daemon ipc_compat_probe -j
+ctest --test-dir build --output-on-failure
 ```
 
-`StaticProductConsumerSmoke` verifies the installed backend and an independently
-configured client-only project that explicitly requests `COMPONENTS ipc_client`,
-disables OpenCV/`yaml-cpp` package discovery, and links only
-`Photospider::photospider_ipc_client`.
+`PhotospiderDaemonInstalledConsumer` verifies an independently configured
+client-only project that finds the installed daemon package and links only
+`PhotospiderDaemon::client`.
 The latter executes safe Client/factory lifecycle behavior without a daemon,
 links exact unique inventories of all 60 typed Client calls and 58 Host virtual
 references, and requires an
-exact IPC archive/target/header export whose sole public link dependency is
-`Threads::Threads`. Its installed IPC-header gate positively allows only the
+exact IPC archive/target/header export whose public link dependencies are
+`Photospider::operation_runtime` and `Threads::Threads`. Its installed
+IPC-header gate positively allows only the
 current C++ standard-library include set and installed `photospider/` public
 includes, and separately rejects raw JSON, socket-address/descriptor,
 file-identity, and file-mapping declarations plus backend types. This is the
 precise tested public-header boundary, not an exhaustive classification of all
-possible POSIX spellings. `IpcDisabledInstallSmoke` verifies an IPC-disabled clean
-install has no IPC forwarder, header, target, archive, or daemon while the
-required `ipc_client` component is unavailable and the default embedded consumer
-remains usable. Real-process tests have CTest timeouts and
+possible POSIX spellings.
+
+`PhotospiderDaemonLoaderEnvironmentContract` injects every maintained
+`LD_LIBRARY_PATH`/`LD_PRELOAD`, `LIBPATH`/`SHLIB_PATH`, and DYLD path,
+framework, fallback, or inserted-library override into a synthetic inherited
+environment and proves with a real child process that all are removed while
+unrelated variables remain. Installed-consumer install/configure/build/run,
+`ldd`/`otool`, installed daemon help, install-layout children, and every frozen
+four-cell probe configure/build/run and daemon process receive that explicit
+clean environment. The installed consumer resolves the external consumer and
+`photospiderd` loader records, rejects missing dependencies and source/build/
+sibling-checkout ownership, and requires exactly one real
+`photospider_operation_runtime` record below the expected installed
+Photospider prefix. On Darwin, canonical `/usr/lib` and `/System/Library`
+install names may be supplied by the dyld shared cache; repository-owned
+runtime records still require an existing installed-prefix file.
+
+Real-process tests have CTest timeouts and
 bounded SIGTERM/SIGKILL/waitpid cleanup. `test_ipc_daemon` starts the product
 `photospiderd` for embedded-Host behavior and also starts the non-installed
 `ipc_output_fixture_daemon` as a separate process for deterministic image and

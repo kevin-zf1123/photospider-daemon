@@ -17,7 +17,6 @@
 #include <utility>
 #include <vector>
 
-#include "core/pending_value.hpp"
 #include "ipc/server.hpp"
 #include "support/ipc_host_spy.hpp"
 
@@ -35,8 +34,6 @@ enum class ValuesMode {
   Empty,
   /** @brief Successful four-byte u8 DenseTensor Value. */
   Nonempty,
-  /** @brief Failed Value used to exercise artifact capture failure. */
-  Invalid,
 };
 
 /**
@@ -480,10 +477,8 @@ bool parse_options(int argc, char** argv, Options* options,
         candidate.values_mode = ValuesMode::Empty;
       } else if (value == "nonempty") {
         candidate.values_mode = ValuesMode::Nonempty;
-      } else if (value == "invalid") {
-        candidate.values_mode = ValuesMode::Invalid;
       } else {
-        *message = "Values mode must be empty, nonempty, or invalid";
+        *message = "Values mode must be empty or nonempty";
         return false;
       }
       continue;
@@ -510,10 +505,19 @@ bool parse_options(int argc, char** argv, Options* options,
 
 /**
  * @brief Builds the configured deterministic Host named-Value result.
- * @param mode Requested empty, Ready, or Failed Value behavior.
- * @return Owned named Values whose payload outlives every copied Host result.
- * @throws Value publication, result validation, or allocation failures
- *         unchanged.
+ *
+ * Empty mode returns no named Values. Nonempty mode constructs one Ready
+ * four-byte unsigned-integer tensor named `image`.
+ *
+ * @param mode Supported `Empty` or `Nonempty` result selection.
+ * @return Empty result for `Empty`; otherwise one owned named tensor whose
+ *         payload outlives every copied Host result.
+ * @throws std::invalid_argument if tensor or named-result validation fails.
+ * @throws std::overflow_error if tensor envelope arithmetic overflows.
+ * @throws std::length_error if a frozen tensor or result bound is exceeded.
+ * @throws std::bad_alloc if tensor or named-result ownership cannot allocate.
+ * @note Both supported modes return successful results, and the tensor payload
+ *       is isolated within the returned Value.
  */
 ps::NamedValueResult make_values(ValuesMode mode) {
   if (mode == ValuesMode::Empty) {
@@ -522,13 +526,6 @@ ps::NamedValueResult make_values(ValuesMode mode) {
   ps::DenseTensorDescriptor descriptor{{4U},
                                        ps::ElementSemantics::UnsignedInteger,
                                        ps::StorageEncoding{8U}};
-  if (mode == ValuesMode::Invalid) {
-    ps::PendingValuePublication pending =
-        ps::PendingValuePublisher::allocate_cpu_dense_tensor(
-            std::move(descriptor), std::nullopt, ps::StridedLayout{{1}}, 4U);
-    return ps::NamedValueResult(
-        {ps::NamedValue{"image", std::move(pending.value)}}, false);
-  }
   ps::Value value = ps::Value::from_cpu_dense_tensor(
       std::move(descriptor), std::nullopt, ps::StridedLayout{{1}},
       std::vector<std::byte>{std::byte{1}, std::byte{2}, std::byte{3},

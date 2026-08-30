@@ -441,7 +441,7 @@ class DaemonProcess {
    * @param start_gate_fd Optional descriptor from which the child must consume
    *        one byte before exec.
    * @param fixture_values_mode Empty for photospiderd, otherwise one of the
-   *        deterministic fixture modes `empty`, `nonempty`, or `invalid`.
+   *        deterministic fixture modes `empty` or `nonempty`.
    * @param fixture_clock_control Absolute fixed-width manual-clock file passed
    *        only to the output fixture; ignored for the product daemon.
    * @throws std::bad_alloc if copied path/environment storage cannot be
@@ -4973,38 +4973,11 @@ TEST(IpcOutputFixtureDaemon,
 }
 
 TEST(IpcOutputFixtureDaemon,
-     InvalidValuesFilesystemPublicationAndArtifactCountQuotaStayNested) {
+     FilesystemPublicationAndArtifactCountQuotaStayNested) {
   ScopedDaemonDirectory temp("ps-output-fail", true);
   ManualProcessClock clock(temp.path() / "clock.bin");
-  const std::string invalid_socket = (temp.path() / "invalid.sock").string();
-  DaemonProcess invalid_daemon;
-  invalid_daemon.start(invalid_socket, true, {}, -1, "invalid",
-                       clock.path().string());
-  ASSERT_TRUE(invalid_daemon.wait_ready(std::chrono::seconds(5)));
-  const IpcResult<GraphSessionSummary> invalid_session = load_fixture_session(
-      invalid_socket, temp.path() / "invalid-sessions", "invalid_output");
-  ASSERT_TRUE(invalid_session.status.ok) << invalid_session.status.message;
-  internal::Json submitted = raw_daemon_call(
-      invalid_socket, "compute.submit",
-      values_compute_submit_params(invalid_session.value.session_id),
-      "invalid-values-submit");
-  ASSERT_TRUE(submitted.contains("result")) << submitted.dump();
-  const std::string invalid_id =
-      submitted["result"]["compute_id"].get<std::string>();
-  internal::Json terminal = wait_for_real_compute_terminal(
-      invalid_socket, invalid_id, std::chrono::seconds(3));
-  ASSERT_TRUE(terminal.contains("result")) << terminal.dump();
-  EXPECT_EQ(terminal["result"]["state"], "failed");
-  EXPECT_EQ(terminal["result"]["status"]["domain"], "daemon");
-  EXPECT_EQ(terminal["result"]["status"]["name"], "internal_error");
-  EXPECT_TRUE(terminal["result"]["output"].is_null());
-  EXPECT_TRUE(raw_daemon_call(invalid_socket, "compute.release",
-                              internal::Json{{"compute_id", invalid_id}},
-                              "invalid-values-release")
-                  .contains("result"));
-  invalid_daemon.stop();
-  ASSERT_TRUE(invalid_daemon.exited_successfully());
-
+  internal::Json submitted;
+  internal::Json terminal;
   const std::string quota_socket = (temp.path() / "quota.sock").string();
   DaemonProcess quota_daemon;
   quota_daemon.start(quota_socket, true, {}, -1, "nonempty",
