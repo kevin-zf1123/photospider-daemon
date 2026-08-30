@@ -16,7 +16,18 @@ _KINDS = {"isolated-runtime", "operation", "policy"}
 
 
 def _parse_arguments() -> argparse.Namespace:
-    """Parse the closed test-bundle generator command line."""
+    """@brief Parse the closed test-bundle generator command line.
+
+    The parser registers every required output and signer option, converts path
+    arguments, and preserves each repeated entry as four ordered fields.
+
+    @return Parsed namespace containing the required paths, signer, trust root,
+      and zero or more four-field entries.
+    @throws SystemExit If help is requested or command-line syntax, arity, or a
+      required option is invalid.
+    @note This zero-argument helper reads the process command line only; it does
+      not validate entry contents, execute the signer, or write bundle files.
+    """
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--signer", required=True)
@@ -36,14 +47,19 @@ def _parse_arguments() -> argparse.Namespace:
 
 
 def _canonical_entry(raw: list[str]) -> str:
-    """Hash and serialize one strictly validated manifest entry.
+    """@brief Hash and serialize one strictly validated manifest entry.
 
-    @param raw Closed ``kind/package/generation/artifact`` field sequence.
+    The helper unpacks and validates the identity fields, reads the complete
+    artifact, computes its SHA-256 digest, and emits one canonical row.
+
+    @param raw Exactly four ``kind/package/generation/artifact`` fields.
     @return Canonical signed-manifest row containing the artifact SHA-256.
-    @throws ValueError If any identity field is unsupported or noncanonical.
+    @throws ValueError If the field count is not four or any identity field is
+      unsupported, zero, or noncanonical.
     @throws OSError If the complete artifact cannot be read.
-    @note Hashing occurs from one path read for maintained test setup; product
-      admission independently reopens, hashes, and retains the exact object.
+    @note This helper writes nothing. The digest reflects one complete test-setup
+      read; product admission independently reopens, hashes, and retains the
+      exact object.
     """
 
     kind, package_id, generation_text, artifact_text = raw
@@ -71,7 +87,11 @@ def write_plugin_trust_bundle(
     trust_root: str,
     entries: Sequence[Sequence[str]],
 ) -> None:
-    """Write one canonical manifest and detached Ed25519 test signature.
+    """@brief Write one canonical manifest and detached Ed25519 test signature.
+
+    The helper canonicalizes and sorts entries, rejects duplicate rows and
+    content roles, writes the manifest, invokes the signer, then writes the
+    valid signature and optional one-nibble negative fixture.
 
     @param signer Exact test-only Ed25519 signer selected by the caller.
     @param private_seed Repository test-only raw Ed25519 private seed.
@@ -85,8 +105,11 @@ def write_plugin_trust_bundle(
     @throws OSError If an input/output file or signer process is unavailable.
     @throws RuntimeError If the signer fails or does not return one Ed25519
       signature.
-    @note The private seed and generated bundle are maintained test data only;
-      no production code imports or invokes this helper.
+    @throws UnicodeEncodeError If the trust-root text cannot be encoded as
+      canonical ASCII manifest content.
+    @note The manifest is sorted and target files are overwritten. The private
+      seed and generated bundle are maintained test data only; no production
+      code imports or invokes this helper.
     """
 
     canonical_entries = [_canonical_entry(list(entry)) for entry in entries]
@@ -136,12 +159,19 @@ def write_plugin_trust_bundle(
 
 
 def main() -> int:
-    """Generate one command-line-selected maintained test trust bundle.
+    """@brief Generate one command-line-selected maintained trust bundle.
+
+    The entry point parses the closed CLI schema, delegates canonical manifest
+    and signature generation, and returns only after all outputs are written.
 
     @return Zero after canonical generation and signing succeeds.
-    @throws Exceptions from argument validation and
-      :func:`write_plugin_trust_bundle` unchanged for CMake/CTest diagnostics.
-    @note Command-line use always requests the mutated negative-test signature.
+    @throws SystemExit If command-line parsing fails or help is requested.
+    @throws ValueError If an entry is invalid, noncanonical, or duplicated.
+    @throws OSError If an artifact, output, or signer process is unavailable.
+    @throws RuntimeError If the signer fails or returns an invalid signature.
+    @throws UnicodeEncodeError If canonical manifest text is not ASCII.
+    @note Exceptions are not rewritten, preserving CMake/CTest diagnostics.
+      Command-line use always requests the mutated negative-test signature.
     """
 
     arguments = _parse_arguments()

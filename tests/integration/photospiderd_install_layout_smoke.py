@@ -129,10 +129,12 @@ def configured_layouts(work: Path) -> tuple[InstallLayout, ...]:
     @param work Validated transient root owning every absolute destination.
     @return Nested-relative, absolute-LIBDIR, and absolute-BINDIR cases.
     @throws None Path composition has no filesystem side effect.
-    @note Default relative ``bin``/``lib`` remains covered by
-      ``StaticProductConsumerSmoke``. Mixed absolute-BINDIR/relative-LIBDIR is
-      installed with its configured prefix because an install-time ``--prefix``
-      override cannot relocate an absolute destination.
+    @note The separately registered ``PhotospiderDaemonInstalledConsumer``
+      covers the default relative ``bin``/``lib`` install. This matrix adds
+      nested and absolute GNUInstallDirs destinations. Mixed
+      absolute-BINDIR/relative-LIBDIR is installed with its configured prefix
+      because an install-time ``--prefix`` override cannot relocate an absolute
+      destination.
     """
 
     return (

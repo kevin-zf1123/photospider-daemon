@@ -242,7 +242,22 @@ def run_checked(
 
 
 def remove_transient_tree(path: Path, build_root: Path) -> None:
-    """Remove one non-symlink strict descendant of the producer build tree."""
+    """@brief Remove one validated transient tree below the producer build.
+
+    The helper resolves the existing producer root, rejects symlink inputs and
+    paths outside that root, then recursively removes the target when present.
+
+    @param path Candidate tree; it must be a non-symlink strict descendant of
+      ``build_root`` after canonical resolution.
+    @param build_root Existing producer build tree that bounds deletion.
+    @return None after the target is absent.
+    @throws RuntimeError If ``path`` is a symlink, resolves to ``build_root``,
+      or resolves outside ``build_root``.
+    @throws OSError If root resolution, path inspection, or recursive removal
+      fails.
+    @note A missing validated target is a no-op. The producer root itself is
+      never removed, and an existing target is deleted recursively.
+    """
 
     resolved_root = build_root.resolve(strict=True)
     unresolved = path.absolute()

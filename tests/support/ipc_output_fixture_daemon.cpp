@@ -505,10 +505,19 @@ bool parse_options(int argc, char** argv, Options* options,
 
 /**
  * @brief Builds the configured deterministic Host named-Value result.
- * @param mode Requested empty, Ready, or Failed Value behavior.
- * @return Owned named Values whose payload outlives every copied Host result.
- * @throws Value publication, result validation, or allocation failures
- *         unchanged.
+ *
+ * Empty mode returns no named Values. Nonempty mode constructs one Ready
+ * four-byte unsigned-integer tensor named `image`.
+ *
+ * @param mode Supported `Empty` or `Nonempty` result selection.
+ * @return Empty result for `Empty`; otherwise one owned named tensor whose
+ *         payload outlives every copied Host result.
+ * @throws std::invalid_argument if tensor or named-result validation fails.
+ * @throws std::overflow_error if tensor envelope arithmetic overflows.
+ * @throws std::length_error if a frozen tensor or result bound is exceeded.
+ * @throws std::bad_alloc if tensor or named-result ownership cannot allocate.
+ * @note Both supported modes return successful results, and the tensor payload
+ *       is isolated within the returned Value.
  */
 ps::NamedValueResult make_values(ValuesMode mode) {
   if (mode == ValuesMode::Empty) {

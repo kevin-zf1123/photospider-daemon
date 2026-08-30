@@ -43,7 +43,21 @@ def run_checked(
 
 
 def remove_work_tree(path: Path, allowed_parent: Path) -> None:
-    """Remove one validated non-symlink strict descendant of an allowed root."""
+    """@brief Remove one validated compatibility tree below an allowed root.
+
+    The helper rejects a symlink input, canonicalizes the existing parent and
+    candidate, then recursively removes an existing strict descendant.
+
+    @param path Candidate work tree to validate and remove.
+    @param allowed_parent Existing directory that bounds recursive deletion.
+    @return None after the validated target is absent.
+    @throws RuntimeError If ``path`` is a symlink, resolves to
+      ``allowed_parent``, or resolves outside ``allowed_parent``.
+    @throws OSError If parent resolution, path inspection, or recursive removal
+      fails.
+    @note A missing validated target is a no-op. The allowed parent itself is
+      never removed, and an existing target is deleted recursively.
+    """
 
     unresolved = path.absolute()
     if unresolved.is_symlink():
@@ -120,7 +134,21 @@ def build_probe(
 
 
 def read_exact(connection: socket.socket, size: int) -> bytes:
-    """Read exactly one bounded byte count from a connected Unix socket."""
+    """@brief Read exactly one caller-bounded count from a connected socket.
+
+    The receive loop accumulates partial chunks until the requested count is
+    complete and rejects an orderly peer close before that boundary.
+
+    @param connection Connected Unix socket owned and closed by the caller.
+    @param size Nonnegative exact byte count already bounded by the protocol
+      caller; zero requests an empty result.
+    @return Exactly ``size`` bytes in receive order.
+    @throws RuntimeError If the daemon closes the frame before all bytes arrive.
+    @throws OSError If socket receipt fails or its configured timeout expires.
+    @throws ValueError If a caller supplies a negative receive size.
+    @note The call blocks subject to the socket timeout, does not close the
+      socket, and does not impose its own upper bound on ``size``.
+    """
 
     chunks: list[bytes] = []
     remaining = size
@@ -134,7 +162,24 @@ def read_exact(connection: socket.socket, size: int) -> bytes:
 
 
 def raw_call(socket_path: Path, method: str, request_id: str) -> dict[str, object]:
-    """Perform one bounded protocol-v2 JSON frame call without a client library."""
+    """@brief Perform one bounded raw protocol-v2 JSON frame call.
+
+    The call encodes one empty-parameter request, exchanges its length-prefixed
+    frame over a fresh Unix socket, then decodes and correlates the response.
+
+    @param socket_path Filesystem path of the daemon Unix socket.
+    @param method Exact protocol-v2 method name to invoke.
+    @param request_id Request identifier that the response must preserve.
+    @return Decoded response object with the correlated identifier.
+    @throws RuntimeError If the peer closes a frame early, returns a zero or
+      over-16-MiB frame, or returns a non-object or uncorrelated response.
+    @throws OSError If socket creation, connection, transmission, receipt, or
+      the fixed two-second socket timeout fails.
+    @throws UnicodeDecodeError If the response payload is not valid UTF-8.
+    @throws json.JSONDecodeError If the UTF-8 response is not valid JSON.
+    @note Requests always use protocol version 2 and empty ``params``. The
+      context manager closes the per-call socket on every exit path.
+    """
 
     request = json.dumps(
         {
@@ -159,7 +204,26 @@ def raw_call(socket_path: Path, method: str, request_id: str) -> dict[str, objec
 
 
 def wait_ready(process: subprocess.Popen[str], socket_path: Path) -> None:
-    """Wait for one daemon to answer a correlated raw protocol-v2 ping."""
+    """@brief Wait for one daemon to answer a correlated protocol-v2 ping.
+
+    The polling loop first rejects an exited child, then performs raw readiness
+    calls and retries expected transport, framing, and JSON failures until the
+    hard deadline or a ``pong`` result.
+
+    @param process Started daemon child expected to own ``socket_path``.
+    @param socket_path Filesystem path probed with ``daemon.ping``.
+    @return None after a correlated response reports ``pong`` as true.
+    @throws RuntimeError If the daemon exits early or no valid readiness reply
+      arrives within ten seconds.
+    @throws OSError If polling or collecting an exited child fails outside the
+      retried raw-call boundary.
+    @throws UnicodeDecodeError If a response is not valid UTF-8.
+    @throws AttributeError If a correlated response contains a non-object
+      ``result`` member.
+    @note Raw-call ``OSError``, ``RuntimeError``, and ``JSONDecodeError`` values
+      are retried every 20 milliseconds. Early-exit handling consumes stdout;
+      this helper neither terminates the child nor retains a socket.
+    """
 
     deadline = time.monotonic() + 10.0
     last_error = "socket not ready"
@@ -214,7 +278,23 @@ def resolve_osx_architectures(
 
 
 def stop_daemon(process: subprocess.Popen[str], socket_path: Path) -> str:
-    """Send SIGTERM, require graceful zero exit, and return captured output."""
+    """@brief Stop one daemon and validate its graceful shutdown boundary.
+
+    The helper sends ``SIGTERM``, waits up to 15 seconds, force-kills a timed-out
+    child, then requires a zero exit status and complete socket-path cleanup.
+
+    @param process Running daemon child whose captured stdout will be consumed.
+    @param socket_path Unix socket path the daemon must remove before exit.
+    @return Complete captured daemon stdout after successful graceful shutdown.
+    @throws RuntimeError If graceful shutdown times out, the exit status is
+      nonzero, or the socket path or a symlink at that path remains.
+    @throws subprocess.TimeoutExpired If a force-killed child still cannot be
+      collected within the additional five-second deadline.
+    @throws OSError If signaling, killing, output collection, or path inspection
+      fails.
+    @note The call changes and consumes the child process state. A 15-second
+      timeout always triggers ``kill`` before the graceful-timeout error.
+    """
 
     process.send_signal(signal.SIGTERM)
     try:

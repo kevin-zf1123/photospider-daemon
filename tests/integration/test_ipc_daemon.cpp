@@ -441,7 +441,7 @@ class DaemonProcess {
    * @param start_gate_fd Optional descriptor from which the child must consume
    *        one byte before exec.
    * @param fixture_values_mode Empty for photospiderd, otherwise one of the
-   *        deterministic fixture modes `empty`, `nonempty`, or `invalid`.
+   *        deterministic fixture modes `empty` or `nonempty`.
    * @param fixture_clock_control Absolute fixed-width manual-clock file passed
    *        only to the output fixture; ignored for the product daemon.
    * @throws std::bad_alloc if copied path/environment storage cannot be
