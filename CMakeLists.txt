@@ -186,9 +186,6 @@ install(FILES
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  find_program(PHOTOSPIDER_DAEMON_OPENSSL_EXECUTABLE
-    NAMES openssl
-    REQUIRED)
   include(GoogleTest)
 
   set(PHOTOSPIDER_DAEMON_TEST_RUNTIME_DIR "${CMAKE_BINARY_DIR}/tests")
@@ -229,6 +226,13 @@ if(BUILD_TESTING)
   target_link_libraries(lifecycle_op_plugin PRIVATE
     Photospider::operation_plugin_sdk)
 
+  add_executable(photospider_daemon_test_manifest_signer
+    tests/support/plugin_trust_manifest_signer.cpp)
+  target_compile_features(photospider_daemon_test_manifest_signer PRIVATE
+    cxx_std_17)
+  target_link_libraries(photospider_daemon_test_manifest_signer PRIVATE
+    OpenSSL::Crypto)
+
   set(PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_DIR
     "${CMAKE_BINARY_DIR}/generated/plugin_trust")
   set(PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_MANIFEST
@@ -248,9 +252,9 @@ if(BUILD_TESTING)
   add_custom_target(photospider_daemon_test_plugin_trust_bundle
     COMMAND "${Python3_EXECUTABLE}" -B
       "${PROJECT_SOURCE_DIR}/tests/support/generate_plugin_trust_bundle.py"
-      --openssl "${PHOTOSPIDER_DAEMON_OPENSSL_EXECUTABLE}"
-      --private-key
-        "${PROJECT_SOURCE_DIR}/tests/fixtures/trust/test_ed25519_private_key.pem"
+      --signer "$<TARGET_FILE:photospider_daemon_test_manifest_signer>"
+      --private-seed
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/trust/test_ed25519_private_seed.hex"
       --manifest "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_MANIFEST}"
       --signature "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_SIGNATURE}"
       --bad-signature
@@ -266,7 +270,8 @@ if(BUILD_TESTING)
       "${PHOTOSPIDER_DAEMON_TEST_PLUGIN_TRUST_BAD_SIGNATURE}"
     DEPENDS
       "${PROJECT_SOURCE_DIR}/tests/support/generate_plugin_trust_bundle.py"
-      "${PROJECT_SOURCE_DIR}/tests/fixtures/trust/test_ed25519_private_key.pem"
+      "${PROJECT_SOURCE_DIR}/tests/fixtures/trust/test_ed25519_private_seed.hex"
+      photospider_daemon_test_manifest_signer
       lifecycle_op_plugin
       test_policy_plugin
     VERBATIM)

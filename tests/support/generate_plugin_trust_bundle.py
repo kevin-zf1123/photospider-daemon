@@ -19,8 +19,8 @@ def _parse_arguments() -> argparse.Namespace:
     """Parse the closed test-bundle generator command line."""
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--openssl", required=True)
-    parser.add_argument("--private-key", type=Path, required=True)
+    parser.add_argument("--signer", required=True)
+    parser.add_argument("--private-seed", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--signature", type=Path, required=True)
     parser.add_argument("--bad-signature", type=Path, required=True)
@@ -63,8 +63,8 @@ def _canonical_entry(raw: list[str]) -> str:
 
 def write_plugin_trust_bundle(
     *,
-    openssl: str,
-    private_key: Path,
+    signer: str,
+    private_seed: Path,
     manifest: Path,
     signature: Path,
     bad_signature: Path | None,
@@ -73,8 +73,8 @@ def write_plugin_trust_bundle(
 ) -> None:
     """Write one canonical manifest and detached Ed25519 test signature.
 
-    @param openssl Exact OpenSSL CLI selected by the caller.
-    @param private_key Repository test-only Ed25519 private key.
+    @param signer Exact test-only Ed25519 signer selected by the caller.
+    @param private_seed Repository test-only raw Ed25519 private seed.
     @param manifest Destination canonical manifest path.
     @param signature Destination lowercase-hex detached signature path.
     @param bad_signature Optional one-nibble-mutated negative-test signature.
@@ -82,10 +82,10 @@ def write_plugin_trust_bundle(
     @param entries Closed artifact entries to hash and serialize.
     @return None after every requested output is durably closed by Python.
     @throws ValueError For invalid, duplicate, or noncanonical input rows.
-    @throws OSError If an input/output file or OpenSSL process is unavailable.
-    @throws subprocess.CalledProcessError If signing fails.
-    @throws RuntimeError If OpenSSL does not return one Ed25519 signature.
-    @note The private key and generated bundle are maintained test data only;
+    @throws OSError If an input/output file or signer process is unavailable.
+    @throws RuntimeError If the signer fails or does not return one Ed25519
+      signature.
+    @note The private seed and generated bundle are maintained test data only;
       no production code imports or invokes this helper.
     """
 
@@ -110,19 +110,19 @@ def write_plugin_trust_bundle(
     manifest.write_bytes(manifest_bytes)
     completed = subprocess.run(
         [
-            openssl,
-            "pkeyutl",
-            "-sign",
-            "-rawin",
-            "-inkey",
-            str(private_key),
-            "-in",
+            signer,
+            str(private_seed),
             str(manifest),
         ],
-        check=True,
+        check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    if completed.returncode != 0:
+        diagnostic = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"Ed25519 test signer exited with {completed.returncode}: {diagnostic}"
+        )
     if len(completed.stdout) != 64:
         raise RuntimeError("Ed25519 test signature is not 64 bytes")
     signature_text = completed.stdout.hex()
@@ -146,8 +146,8 @@ def main() -> int:
 
     arguments = _parse_arguments()
     write_plugin_trust_bundle(
-        openssl=arguments.openssl,
-        private_key=arguments.private_key,
+        signer=arguments.signer,
+        private_seed=arguments.private_seed,
         manifest=arguments.manifest,
         signature=arguments.signature,
         bad_signature=arguments.bad_signature,
