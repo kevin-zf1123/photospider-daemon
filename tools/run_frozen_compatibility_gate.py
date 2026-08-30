@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import shutil
 import signal
@@ -16,12 +15,27 @@ import tempfile
 import time
 from pathlib import Path
 
+from loader_environment import clean_loader_environment
 
-def run_checked(command: list[str], cwd: Path) -> None:
-    """Run one visible child command and require a zero exit status."""
+
+def run_checked(
+    command: list[str], cwd: Path, environment: dict[str, str]
+) -> None:
+    """@brief Run one visible child with an explicit clean loader environment.
+
+    @param command Executable and arguments passed directly without a shell.
+    @param cwd Existing child working directory.
+    @param environment Explicit environment produced by
+      ``clean_loader_environment``.
+    @return None after a zero child exit status.
+    @throws OSError If process creation fails.
+    @throws RuntimeError If the child exits with a nonzero status.
+    @note Probe configure, build, and run calls cannot inherit developer loader
+      overrides through this required parameter.
+    """
 
     print("$ " + " ".join(command), flush=True)
-    completed = subprocess.run(command, cwd=cwd, check=False)
+    completed = subprocess.run(command, cwd=cwd, env=environment, check=False)
     if completed.returncode != 0:
         raise RuntimeError(
             f"command exited with {completed.returncode}: {' '.join(command)}"
@@ -53,8 +67,25 @@ def build_probe(
     osx_architectures: str,
     photospider_dir: Path,
     daemon_dir: Path | None,
+    environment: dict[str, str],
 ) -> Path:
-    """Configure and build the common probe against one installed package."""
+    """@brief Configure and build one probe against an installed client package.
+
+    @param kind Stable ``old`` or ``new`` package label.
+    @param source Canonical daemon repository containing the common probe.
+    @param build Isolated probe build directory.
+    @param cmake CMake executable selected by the caller.
+    @param generator Optional CMake generator name.
+    @param config Optional build configuration.
+    @param osx_architectures Optional Darwin architecture list.
+    @param photospider_dir Installed frozen Photospider package directory.
+    @param daemon_dir Installed standalone daemon package directory for the new
+      client, or None for the frozen old client.
+    @param environment Explicit sanitized loader environment.
+    @return Canonical built compatibility probe executable.
+    @throws RuntimeError If configure/build fails or no executable is produced.
+    @note Both configure and build use the same explicit environment.
+    """
 
     configure = [
         cmake,
@@ -73,11 +104,11 @@ def build_probe(
         configure.append(f"-DCMAKE_OSX_ARCHITECTURES={osx_architectures}")
     if config and "Multi-Config" not in generator and generator != "Xcode":
         configure.append(f"-DCMAKE_BUILD_TYPE={config}")
-    run_checked(configure, source)
+    run_checked(configure, source, environment)
     build_command = [cmake, "--build", str(build), "--target", "ipc_compat_probe"]
     if config:
         build_command.extend(["--config", config])
-    run_checked(build_command, source)
+    run_checked(build_command, source, environment)
 
     candidates = [build / "ipc_compat_probe"]
     if config:
@@ -149,32 +180,24 @@ def wait_ready(process: subprocess.Popen[str], socket_path: Path) -> None:
     raise RuntimeError(f"daemon readiness timed out: {last_error}")
 
 
-def clean_loader_environment() -> dict[str, str]:
-    """Return an environment without developer loader override variables."""
+def resolve_osx_architectures(
+    requested: str, daemon: Path, environment: dict[str, str]
+) -> str:
+    """@brief Resolve a requested or installed-daemon Darwin architecture list.
 
-    environment = dict(os.environ)
-    for name in (
-        "LD_LIBRARY_PATH",
-        "LD_PRELOAD",
-        "LIBPATH",
-        "SHLIB_PATH",
-        "DYLD_LIBRARY_PATH",
-        "DYLD_FALLBACK_LIBRARY_PATH",
-        "DYLD_FRAMEWORK_PATH",
-        "DYLD_FALLBACK_FRAMEWORK_PATH",
-        "DYLD_INSERT_LIBRARIES",
-    ):
-        environment.pop(name, None)
-    return environment
-
-
-def resolve_osx_architectures(requested: str, daemon: Path) -> str:
-    """Resolve an explicit or installed-daemon Darwin architecture list."""
+    @param requested Explicit semicolon-separated architecture list, if any.
+    @param daemon Canonical frozen daemon executable inspected when needed.
+    @param environment Explicit sanitized loader environment for ``lipo``.
+    @return Requested or inferred semicolon-separated architectures.
+    @throws RuntimeError If Darwin metadata cannot be read.
+    @note Non-Darwin callers return the requested string without a child.
+    """
 
     if requested or platform.system() != "Darwin":
         return requested
     inspected = subprocess.run(
         ["lipo", "-archs", str(daemon)],
+        env=environment,
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -210,9 +233,25 @@ def stop_daemon(process: subprocess.Popen[str], socket_path: Path) -> str:
 
 
 def run_cell(
-    label: str, probe: Path, daemon: Path, graph_yaml: Path
+    label: str,
+    probe: Path,
+    daemon: Path,
+    graph_yaml: Path,
+    environment: dict[str, str],
 ) -> None:
-    """Run one isolated public-client to product-daemon compatibility cell."""
+    """@brief Run one isolated public-client/product-daemon compatibility cell.
+
+    @param label Stable old/new cell label.
+    @param probe Canonical installed-client probe executable.
+    @param daemon Canonical installed product daemon executable.
+    @param graph_yaml Canonical deterministic compatibility graph.
+    @param environment Explicit sanitized loader environment used by both
+      daemon and probe.
+    @return None after correlated metadata, deep vertical behavior, negatives,
+      and graceful signal shutdown pass.
+    @throws RuntimeError If any cell invariant fails.
+    @note Raw socket calls occur in-process and cannot redirect dynamic loading.
+    """
 
     cell_root = Path(tempfile.mkdtemp(prefix=f"ps-{label}-", dir="/tmp"))
     cell_root.chmod(0o700)
@@ -220,7 +259,7 @@ def run_cell(
     process = subprocess.Popen(
         [str(daemon), "--socket", str(socket_path)],
         cwd=cell_root,
-        env=clean_loader_environment(),
+        env=environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -230,6 +269,7 @@ def run_cell(
         run_checked(
             [str(probe), str(socket_path), str(graph_yaml), str(cell_root)],
             cell_root,
+            environment,
         )
         for method in ("compute.cancel", "daemon.shutdown"):
             response = raw_call(socket_path, method, f"negative-{method}")
@@ -250,7 +290,16 @@ def run_cell(
 
 
 def main() -> int:
-    """Build two public probes and execute all four frozen-baseline cells."""
+    """@brief Build two probes and execute all four frozen-baseline cells.
+
+    @return Zero after old-old, old-new, new-old, and new-new pass.
+    @throws OSError If paths or child processes cannot be accessed.
+    @throws RuntimeError If path safety, probe construction, metadata, deep
+      behavior, negative routes, or graceful shutdown fails.
+    @note One clean loader environment is captured before any child and passed
+      to architecture inspection, both probe configure/build pairs, both
+      product daemons, and every probe run.
+    """
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
@@ -269,6 +318,7 @@ def main() -> int:
     args = parser.parse_args()
 
     source = Path(args.source).resolve(strict=True)
+    environment = clean_loader_environment()
     allowed_parent = Path(args.work).absolute().parent.resolve(strict=True)
     work = Path(args.work).absolute()
     remove_work_tree(work, allowed_parent)
@@ -277,7 +327,7 @@ def main() -> int:
         old_daemon = Path(args.old_daemon).resolve(strict=True)
         new_daemon = Path(args.new_daemon).resolve(strict=True)
         osx_architectures = resolve_osx_architectures(
-            args.osx_architectures, old_daemon
+            args.osx_architectures, old_daemon, environment
         )
         old_probe = build_probe(
             kind="old",
@@ -289,6 +339,7 @@ def main() -> int:
             osx_architectures=osx_architectures,
             photospider_dir=Path(args.old_photospider_dir).resolve(strict=True),
             daemon_dir=None,
+            environment=environment,
         )
         new_probe = build_probe(
             kind="new",
@@ -300,14 +351,15 @@ def main() -> int:
             osx_architectures=osx_architectures,
             photospider_dir=Path(args.old_photospider_dir).resolve(strict=True),
             daemon_dir=Path(args.new_photospider_daemon_dir).resolve(strict=True),
+            environment=environment,
         )
         graph_yaml = (source / "tests/interop/frozen_v2_constant.yaml").resolve(
             strict=True
         )
-        run_cell("old-old", old_probe, old_daemon, graph_yaml)
-        run_cell("old-new", old_probe, new_daemon, graph_yaml)
-        run_cell("new-old", new_probe, old_daemon, graph_yaml)
-        run_cell("new-new", new_probe, new_daemon, graph_yaml)
+        run_cell("old-old", old_probe, old_daemon, graph_yaml, environment)
+        run_cell("old-new", old_probe, new_daemon, graph_yaml, environment)
+        run_cell("new-old", new_probe, old_daemon, graph_yaml, environment)
+        run_cell("new-new", new_probe, new_daemon, graph_yaml, environment)
         print("frozen IPC v2 four-cell compatibility gate: PASS", flush=True)
     finally:
         remove_work_tree(work, allowed_parent)

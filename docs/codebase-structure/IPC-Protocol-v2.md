@@ -1597,7 +1597,24 @@ current C++ standard-library include set and installed `photospider/` public
 includes, and separately rejects raw JSON, socket-address/descriptor,
 file-identity, and file-mapping declarations plus backend types. This is the
 precise tested public-header boundary, not an exhaustive classification of all
-possible POSIX spellings. Real-process tests have CTest timeouts and
+possible POSIX spellings.
+
+`PhotospiderDaemonLoaderEnvironmentContract` injects every maintained
+`LD_LIBRARY_PATH`/`LD_PRELOAD`, `LIBPATH`/`SHLIB_PATH`, and DYLD path,
+framework, fallback, or inserted-library override into a synthetic inherited
+environment and proves with a real child process that all are removed while
+unrelated variables remain. Installed-consumer install/configure/build/run,
+`ldd`/`otool`, installed daemon help, install-layout children, and every frozen
+four-cell probe configure/build/run and daemon process receive that explicit
+clean environment. The installed consumer resolves the external consumer and
+`photospiderd` loader records, rejects missing dependencies and source/build/
+sibling-checkout ownership, and requires exactly one real
+`photospider_operation_runtime` record below the expected installed
+Photospider prefix. On Darwin, canonical `/usr/lib` and `/System/Library`
+install names may be supplied by the dyld shared cache; repository-owned
+runtime records still require an existing installed-prefix file.
+
+Real-process tests have CTest timeouts and
 bounded SIGTERM/SIGKILL/waitpid cleanup. `test_ipc_daemon` starts the product
 `photospiderd` for embedded-Host behavior and also starts the non-installed
 `ipc_output_fixture_daemon` as a separate process for deterministic image and

@@ -1332,6 +1332,19 @@ lifecycle 行为，以精确且唯一的 inventory 链接全部 60 个 typed Cli
 include set 与已安装的 `photospider/` public include；同时明确拒绝 raw JSON、socket address/
 descriptor、file identity、file mapping declaration 与 backend type。这是门禁实际验证的精确
 public-header 边界，并不声称穷举所有可能的 POSIX 拼写。
+
+`PhotospiderDaemonLoaderEnvironmentContract` 会把全部受维护的
+`LD_LIBRARY_PATH`/`LD_PRELOAD`、`LIBPATH`/`SHLIB_PATH`，以及 DYLD path、
+framework、fallback 或 inserted-library override 注入一份模拟 inherited environment，
+并通过真实 child process 证明这些变量全部被删除，同时保留无关变量。Installed-consumer 的
+install/configure/build/run、`ldd`/`otool`、installed daemon help、install-layout child，以及
+冻结四格中每个 probe configure/build/run 与 daemon process，都会收到这份显式 clean
+environment。Installed consumer 会解析 external consumer 与 `photospiderd` 的 loader record，
+拒绝 missing dependency 以及 source/build/sibling-checkout ownership，并要求恰好一条真实的
+`photospider_operation_runtime` record 位于预期 installed Photospider prefix 之下。在 Darwin
+上，canonical `/usr/lib` 与 `/System/Library` install name 可以由 dyld shared cache 提供；
+repository-owned runtime record 仍必须对应 installed prefix 中实际存在的文件。
+
 Real-process test 有 CTest timeout 与 bounded
 SIGTERM/SIGKILL/waitpid cleanup。`test_ipc_daemon` 会启动产品 `photospiderd` 以验证 embedded-Host
 行为，也会把 non-installed `ipc_output_fixture_daemon` 作为独立进程启动，以提供 deterministic

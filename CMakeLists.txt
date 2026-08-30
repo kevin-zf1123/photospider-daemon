@@ -373,6 +373,12 @@ if(BUILD_TESTING)
       -P "${PROJECT_SOURCE_DIR}/tests/integration/photospiderd_capability_help.cmake")
   set_tests_properties(PhotospiderdCapabilityHelp PROPERTIES TIMEOUT 10)
 
+  add_test(NAME PhotospiderDaemonLoaderEnvironmentContract
+    COMMAND "${Python3_EXECUTABLE}" -B
+      "${PROJECT_SOURCE_DIR}/tests/integration/loader_environment_contract_test.py")
+  set_tests_properties(PhotospiderDaemonLoaderEnvironmentContract PROPERTIES
+    TIMEOUT 10)
+
   add_test(NAME PhotospiderDaemonInstalledConsumer
     COMMAND "${Python3_EXECUTABLE}"
       "${PROJECT_SOURCE_DIR}/tests/integration/installed_consumer_smoke.py"

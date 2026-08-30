@@ -8,8 +8,17 @@ import platform
 import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+"""Canonical source root used only to import maintained test helpers."""
+
+sys.path.insert(0, str(REPOSITORY_ROOT / "tools"))
+
+from loader_environment import clean_loader_environment  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -72,19 +81,25 @@ def validate_work_root(repo: Path, build_root: Path, work: Path) -> None:
         )
 
 
-def run_checked(command: list[str], cwd: Path) -> None:
+def run_checked(
+    command: list[str], cwd: Path, environment: dict[str, str]
+) -> None:
     """@brief Run one visible child command and require success.
 
     @param command Executable and arguments passed directly without a shell.
     @param cwd Existing child working directory.
+    @param environment Explicit sanitized dynamic-loader environment.
     @return None after a zero child exit status.
     @throws OSError If the process cannot start.
     @throws RuntimeError If the child exits with a nonzero status.
-    @note Standard output and error are inherited for direct CTest diagnostics.
+    @note Standard output and error are inherited for direct CTest diagnostics;
+      environment inheritance is always explicit and loader-sanitized.
     """
 
     print("$ " + shlex.join(command), flush=True)
-    completed = subprocess.run(command, cwd=cwd, check=False)
+    completed = subprocess.run(
+        command, cwd=cwd, env=environment, check=False
+    )
     if completed.returncode != 0:
         raise RuntimeError(
             f"command exited with {completed.returncode}: {shlex.join(command)}"
@@ -174,6 +189,7 @@ def run_layout(
     config: str,
     osx_architectures: str,
     platform_system: str,
+    environment: dict[str, str],
 ) -> None:
     """@brief Configure, build, install, and execute one isolated layout.
 
@@ -187,11 +203,12 @@ def run_layout(
     @param config Requested build configuration, possibly empty.
     @param osx_architectures Darwin architecture list, possibly empty.
     @param platform_system Host platform name.
+    @param environment Explicit sanitized loader environment for every child.
     @return None after installed ``photospiderd --help`` succeeds.
     @throws OSError If filesystem or process startup fails.
     @throws RuntimeError If configure, build, install, or daemon help fails.
-    @note Every child directory is case-local. The shared help driver removes
-      LD/DYLD and related loader overrides immediately before real execution.
+    @note Every child directory is case-local. Configure, build, install, and
+      the shared help driver all receive the same loader-sanitized environment.
     """
 
     case_root = work / layout.name
@@ -220,7 +237,7 @@ def run_layout(
         configure_command.append(
             f"-DCMAKE_OSX_ARCHITECTURES={osx_architectures}"
         )
-    run_checked(configure_command, case_root)
+    run_checked(configure_command, case_root, environment)
 
     build_command = [
         cmake_executable,
@@ -231,12 +248,12 @@ def run_layout(
     ]
     if config:
         build_command.extend(["--config", config])
-    run_checked(build_command, case_root)
+    run_checked(build_command, case_root, environment)
 
     install_command = [cmake_executable, "--install", str(build)]
     if config:
         install_command.extend(["--config", config])
-    run_checked(install_command, case_root)
+    run_checked(install_command, case_root, environment)
 
     daemon = installed_daemon_path(prefix, layout.bindir, platform_system)
     if not daemon.is_file():
@@ -254,6 +271,7 @@ def run_layout(
             ),
         ],
         case_root,
+        environment,
     )
     print(f"layout {layout.name} installed daemon help passed", flush=True)
 
@@ -282,6 +300,7 @@ def main() -> int:
     args = parser.parse_args()
 
     platform_system = platform.system()
+    environment = clean_loader_environment()
     if platform_system not in {"Darwin", "Linux"}:
         raise RuntimeError(
             f"photospiderd install layout smoke is unsupported on {platform_system}"
@@ -317,6 +336,7 @@ def main() -> int:
                 config=args.config,
                 osx_architectures=args.osx_architectures,
                 platform_system=platform_system,
+                environment=environment,
             )
         print(f"all {len(layouts)} install layouts passed", flush=True)
     finally:
