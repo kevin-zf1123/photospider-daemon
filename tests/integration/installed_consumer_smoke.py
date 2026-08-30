@@ -117,7 +117,15 @@ def run_daemon_help(daemon: Path, cwd: Path) -> None:
 
 
 def main() -> int:
-    """Run install, export scan, external build, and installed runtime checks."""
+    """@brief Install and validate the standalone daemon package boundary.
+
+    @return Zero after export, consumer, runtime, and loader checks pass.
+    @throws OSError If filesystem access or a child process cannot start.
+    @throws RuntimeError If any package, runtime, or loader invariant fails.
+    @note Darwin ``otool -L`` output starts with the inspected binary path;
+      that validated header is metadata, while only following lines are loader
+      dependency records subject to source/build-residue checks.
+    """
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
@@ -202,11 +210,19 @@ def main() -> int:
             raise RuntimeError(f"installed daemon is absent: {daemon}")
         run_daemon_help(daemon, work)
 
+        inspected_system = platform.system()
         inspect_command = ["otool", "-L", str(daemon)]
-        if platform.system() == "Linux":
+        if inspected_system == "Linux":
             inspect_command = ["ldd", str(daemon)]
         inspected = run_checked(inspect_command, work).stdout
-        if str(source) in inspected or str(producer_build) in inspected:
+        loader_records = inspected.splitlines()
+        if inspected_system == "Darwin":
+            expected_header = f"{daemon}:"
+            if not loader_records or loader_records[0] != expected_header:
+                raise RuntimeError("otool output omitted the inspected daemon header")
+            loader_records = loader_records[1:]
+        loader_text = "\n".join(loader_records)
+        if str(source) in loader_text or str(producer_build) in loader_text:
             raise RuntimeError("installed daemon retained a build/source loader path")
     finally:
         remove_transient_tree(work, producer_build)
