@@ -17,7 +17,6 @@
 #include <utility>
 #include <vector>
 
-#include "core/pending_value.hpp"
 #include "ipc/server.hpp"
 #include "support/ipc_host_spy.hpp"
 
@@ -35,8 +34,6 @@ enum class ValuesMode {
   Empty,
   /** @brief Successful four-byte u8 DenseTensor Value. */
   Nonempty,
-  /** @brief Failed Value used to exercise artifact capture failure. */
-  Invalid,
 };
 
 /**
@@ -480,10 +477,8 @@ bool parse_options(int argc, char** argv, Options* options,
         candidate.values_mode = ValuesMode::Empty;
       } else if (value == "nonempty") {
         candidate.values_mode = ValuesMode::Nonempty;
-      } else if (value == "invalid") {
-        candidate.values_mode = ValuesMode::Invalid;
       } else {
-        *message = "Values mode must be empty, nonempty, or invalid";
+        *message = "Values mode must be empty or nonempty";
         return false;
       }
       continue;
@@ -522,13 +517,6 @@ ps::NamedValueResult make_values(ValuesMode mode) {
   ps::DenseTensorDescriptor descriptor{{4U},
                                        ps::ElementSemantics::UnsignedInteger,
                                        ps::StorageEncoding{8U}};
-  if (mode == ValuesMode::Invalid) {
-    ps::PendingValuePublication pending =
-        ps::PendingValuePublisher::allocate_cpu_dense_tensor(
-            std::move(descriptor), std::nullopt, ps::StridedLayout{{1}}, 4U);
-    return ps::NamedValueResult(
-        {ps::NamedValue{"image", std::move(pending.value)}}, false);
-  }
   ps::Value value = ps::Value::from_cpu_dense_tensor(
       std::move(descriptor), std::nullopt, ps::StridedLayout{{1}},
       std::vector<std::byte>{std::byte{1}, std::byte{2}, std::byte{3},

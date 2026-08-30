@@ -25,7 +25,6 @@
 #include <utility>
 #include <vector>
 
-#include "core/pending_value.hpp"
 #include "ipc/codec.hpp"
 #include "ipc/output_store.hpp"
 #include "ipc/unix_socket.hpp"
@@ -824,35 +823,6 @@ TEST(OutputStore, WritesExactTightRowsAndPrivateIdentityMetadata) {
   EXPECT_FALSE(std::filesystem::exists(delivery.value.metadata.path));
   EXPECT_EQ(store.artifact_count(), 0U);
   EXPECT_EQ(store.retained_bytes(), 0U);
-}
-
-TEST(OutputStore, NonReadyValuesBecomeInternalFailureWithoutResidue) {
-  StoreEnvironment environment;
-  SequentialIds ids;
-  OutputStore store({}, {}, [&] { return ids.next(); });
-  const std::string instance_id = opaque_id(3);
-  ASSERT_TRUE(
-      store.start(environment.socket_path(), instance_id, environment.lock_fd())
-          .ok);
-
-  DenseTensorDescriptor descriptor{{1U, 1U, 1U},
-                                   ElementSemantics::UnsignedInteger,
-                                   StorageEncoding{8U}};
-  const ImageFacet facet = make_zero_origin_image_facet(descriptor, 1U, 0U, 2U);
-  PendingValuePublication pending =
-      PendingValuePublisher::allocate_cpu_dense_tensor(
-          descriptor, facet, StridedLayout{{1, 1, 1}}, 1U);
-  NamedValueResult values({NamedValue{"image", pending.value}}, false);
-  ComputeOutputPublication publication =
-      store.publish(ComputeRequestId{opaque_id(30)}, std::move(values));
-  EXPECT_FALSE(publication.status.ok);
-  EXPECT_EQ(publication.status.domain, OperationErrorDomain::Daemon);
-  EXPECT_EQ(publication.status.code, kInternalErrorCode);
-  EXPECT_EQ(publication.status.name, "internal_error");
-  EXPECT_FALSE(publication.output.active());
-  EXPECT_EQ(store.artifact_count(), 0U);
-  EXPECT_EQ(store.retained_bytes(), 0U);
-  EXPECT_EQ(directory_entry_count(environment.instance_path(instance_id)), 0U);
 }
 
 /**

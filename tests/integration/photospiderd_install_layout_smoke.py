@@ -166,6 +166,8 @@ def run_layout(
     layout: InstallLayout,
     *,
     repo: Path,
+    photospider_dir: Path,
+    dependency_libdir: Path,
     work: Path,
     cmake_executable: str,
     generator: str,
@@ -176,7 +178,9 @@ def run_layout(
     """@brief Configure, build, install, and execute one isolated layout.
 
     @param layout GNUInstallDirs values owned by this case.
-    @param repo Canonical Photospider source repository.
+    @param repo Canonical PhotospiderDaemon source repository.
+    @param photospider_dir Installed Photospider package configuration path.
+    @param dependency_libdir Installed Photospider runtime library directory.
     @param work Validated matrix work root.
     @param cmake_executable Exact CMake executable selected by the outer build.
     @param generator Outer generator reused by the child producer.
@@ -202,12 +206,8 @@ def run_layout(
         "-B",
         str(build),
         "-DBUILD_TESTING=OFF",
-        "-DPHOTOSPIDER_ENABLE_OPENCV=OFF",
-        "-DPHOTOSPIDER_ENABLE_YAML=OFF",
-        "-DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PROVIDER=OFF",
-        "-DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PLUGINS=OFF",
-        "-DPHOTOSPIDER_BUILD_GRAPH_CLI=OFF",
-        "-DPHOTOSPIDER_BUILD_IPC=ON",
+        f"-DPhotospider_DIR={photospider_dir}",
+        f"-DPHOTOSPIDER_DAEMON_DEPENDENCY_LIBDIR={dependency_libdir}",
         f"-DCMAKE_INSTALL_PREFIX={prefix}",
         f"-DCMAKE_INSTALL_BINDIR={layout.bindir}",
         f"-DCMAKE_INSTALL_LIBDIR={layout.libdir}",
@@ -271,6 +271,8 @@ def main() -> int:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
+    parser.add_argument("--photospider-dir", required=True)
+    parser.add_argument("--dependency-libdir", default="")
     parser.add_argument("--build-root", required=True)
     parser.add_argument("--work", required=True)
     parser.add_argument("--cmake-executable", default="cmake")
@@ -286,6 +288,12 @@ def main() -> int:
         )
 
     repo = Path(args.repo).resolve(strict=True)
+    photospider_dir = Path(args.photospider_dir).resolve(strict=True)
+    dependency_libdir = (
+        Path(args.dependency_libdir).resolve(strict=True)
+        if args.dependency_libdir
+        else photospider_dir.parent.parent
+    )
     build_root = Path(args.build_root).resolve(strict=True)
     raw_work = Path(args.work).absolute()
     if raw_work.is_symlink():
@@ -301,6 +309,8 @@ def main() -> int:
             run_layout(
                 layout,
                 repo=repo,
+                photospider_dir=photospider_dir,
+                dependency_libdir=dependency_libdir,
                 work=work,
                 cmake_executable=args.cmake_executable,
                 generator=args.generator,

@@ -5,20 +5,26 @@
 
 ## 产品与范围
 
-当 `CMAKE_SYSTEM_NAME` 精确为 `Darwin` 或 `Linux` 时，
-`PHOTOSPIDER_BUILD_IPC` 默认 `ON`，并构建：
+本仓库是当前 IPC v2 product 唯一的 source、package、documentation 与 test owner。当
+`CMAKE_SYSTEM_NAME` 精确为 `Darwin` 或 `Linux` 时，standalone CMake build 会构建：
 
-- `photospider_ipc_client`：已安装 static library，导出为
-  `Photospider::photospider_ipc_client`；
-- `photospider_ipc_server_internal`：不安装的 server/router library；
+- `photospider_daemon_client`：已安装 static library，导出为
+  `PhotospiderDaemon::client`；
+- `photospider_daemon_server_internal`：不安装的 server/router library；
 - `photospiderd`：已安装的 foreground executable。
+
+client 以 public 方式链接已安装 `Photospider::operation_runtime` 与 `Threads::Threads`；
+这是真实 static-library link closure。client 不链接完整 embedded kernel。`photospiderd` 私有
+链接 installed Photospider package 中的 `Photospider::photospider`。构建不使用 Photospider
+submodule、sibling checkout include 或 private kernel header，也不导出 private codec/router/
+server targets。
 
 当前 daemon capability profile 是同用户本地 workstation sidecar。它只监听受保护的 Unix-domain
 socket，其 process shell 恰好创建一个由 server/router 借用的 embedded `ps::Host`。它不是后台
 system service、多用户或 multi-tenant service、远程 endpoint 或 TCP server。这些画像需要独立的
 transport、identity、authentication/authorization、isolation 与 lifecycle 设计。
 
-[ADR 0011](../../adr/zh/0011-server-control-plane-workers-and-plugin-runtimes-are-separate-security-domains.zh.md)
+[冻结 Photospider 基线中的 ADR 0011](https://github.com/kevin-zf1123/photospider/blob/full-stack-archive-2026-08-30/docs/adr/zh/0011-server-control-plane-workers-and-plugin-runtimes-are-separate-security-domains.zh.md)
 现已把该未来设计裁定为相互独立的 network control plane、worker manager、每个 Job attempt
 独占的受限 worker、artifact data plane，以及隔离的非可信 CPU-plugin runtime。该决策不会扩展
 本协议，也不会把同 UID 路径保护、session name、opaque id、process-global plugin method 或私有
@@ -26,7 +32,7 @@ transport、identity、authentication/authorization、isolation 与 lifecycle �
 durable artifact authority。
 
 Issues #99、#100 与 #105 现在通过独立的源码私有
-[单租户 Job 纵向路径](../../kernel-architecture/zh/Single-Tenant-Job-Vertical.zh.md)
+[冻结 Photospider 基线中的单租户 Job 纵向路径](https://github.com/kevin-zf1123/photospider/blob/full-stack-archive-2026-08-30/docs/kernel-architecture/zh/Single-Tenant-Job-Vertical.zh.md)
 实现 canonical JobSpec、tenant quota、durable Job/artifact recovery、显式 retry/checkpoint
 identity、每 attempt 一个全新 process，以及分离的 worker control/data transport。它只通过
 internal CMake target 链接，没有 daemon route 或 installed codec，也不组合进
@@ -61,22 +67,17 @@ Cancellation owner 只能为有界 receive-side report/EOF/exit 排空继续保�
 Public client header 是 `photospider/ipc/protocol.hpp`、`photospider/ipc/client.hpp` 与
 `photospider/ipc/host.hpp`。它们只暴露 typed owned value 和完整 Host factory，不暴露 JSON
 type、socket descriptor、`sockaddr_un`、backend model、runtime service 或 mutable backend ownership。
-Client library 不链接 `photospider` backend。Installed IPC-only consumer 必须显式选择
-component：
+Client library 不链接完整 `photospider` backend。Installed client consumer 显式查找本 package：
 
 ```cmake
-find_package(Photospider CONFIG REQUIRED COMPONENTS ipc_client)
-target_link_libraries(app PRIVATE Photospider::photospider_ipc_client)
+find_package(PhotospiderDaemon CONFIG REQUIRED)
+target_link_libraries(app PRIVATE PhotospiderDaemon::client)
 ```
 
-该 component 只解析 `Threads`。省略 `COMPONENTS`，或显式请求 `COMPONENTS embedded`，
-会保留 embedded package 行为，并按适用平台解析 Threads、OpenCV、`yaml-cpp` 以及 Apple
-Metal/Foundation framework。Required unknown component 会使 package discovery 失败；producer
-禁用 IPC 时，required `ipc_client` component 也会失败。不可用或 unknown optional component
-会保持 not-found，而不会使其他要求已满足的 package request 失效；特别是 required IPC-only
-request 可以在禁用 backend discovery 时把 `embedded` 列为 optional。IPC disabled 时，不安装
-该 target 与 public header。在其他任何 CMake system name 下强制
-开启 IPC 会使 configure 明确失败。
+`PhotospiderDaemonConfig.cmake` 会先解析 `Threads` 与 installed `Photospider`
+`operation_runtime` component，再 import client。standalone producer 还需要 installed
+`embedded`、`operation_runtime`、`operation_plugin_sdk` 与 `policy_sdk` targets，以构建 executable
+和长期 fixtures。任何其他 CMake system name 都会使 configure 显式失败，而不会公告 fake daemon。
 
 `daemon.version.methods` 来自 metadata 与 dispatch 前 admission 共用的一张统一表。
 独立的 route-family matcher 能让已 advertisement 但未支持的 route 保持可检测。该表报告以下精确排序的 60-method inventory：
@@ -1313,27 +1314,24 @@ method，进程也不会 fork daemonize。
 Focused local command：
 
 ```bash
-cmake -S . -B build -DPHOTOSPIDER_BUILD_IPC=ON -DBUILD_TESTING=ON
-cmake --build build --target photospider_ipc_client \
-  photospider_ipc_server_internal photospiderd test_ipc_protocol test_ipc_host \
+cmake -S . -B build -DBUILD_TESTING=ON \
+  -DCMAKE_PREFIX_PATH=/absolute/photospider-prefix \
+  -DPHOTOSPIDER_DAEMON_DEPENDENCY_LIBDIR=/absolute/photospider-prefix/lib
+cmake --build build --target photospider_daemon_client \
+  photospider_daemon_server_internal photospiderd test_ipc_protocol test_ipc_host \
   test_compute_request_registry test_collection_snapshot_registry \
-  test_output_store test_event_stream_boundaries test_ipc_daemon \
-  public_header_self_containment -j
-ctest --test-dir build --output-on-failure \
-  -R '^(FrameCodec|ProtocolEnvelope|IntegerCodec|ProtocolErrors|ProtocolParams|ProtocolGraphLoad|ProtocolGraphClose|ProtocolOperationPlugins|HostRoutedGraphStateProtocolTest|StableInspectionPagingProtocolTest|InspectionJson|SessionRegistry|ComputeRequestRegistry|CollectionSnapshotRegistry|OutputStore|ComputeEventRing|ExecutionTraceRing|UnixSocketConnect|ClientLifecycle|ClientSurface|ClientCollectionAggregation|ClientJobValidation|ClientRetryPolicy|ClientResultValidation|IpcHost|IpcDaemon|IpcDaemonOperationPlugins|IpcDaemonPolicy|IpcDaemonExecution|IpcObservationFixtureDaemon|StaticProductConsumerSmoke|IpcDisabledInstallSmoke|PublicHeaderSelfContainment)'
+  test_output_store test_ipc_daemon ipc_compat_probe -j
+ctest --test-dir build --output-on-failure
 ```
 
-`StaticProductConsumerSmoke` 验证 installed backend 与一个独立 configure 的 client-only project；
-后者显式请求 `COMPONENTS ipc_client`、禁用 OpenCV/`yaml-cpp` package discovery，并且只链接
-`Photospider::photospider_ipc_client`。它会在没有 daemon 的情况下执行安全 Client/factory
+`PhotospiderDaemonInstalledConsumer` 验证一个独立 configure 的 client-only project；后者查找
+installed daemon package，并且只链接 `PhotospiderDaemon::client`。它会在没有 daemon 的情况下执行安全 Client/factory
 lifecycle 行为，以精确且唯一的 inventory 链接全部 60 个 typed Client call 与 58 个 Host virtual
 引用，并要求精确的 IPC archive/target/header export；其唯一 public link dependency 是
-`Threads::Threads`。Installed IPC-header gate 采用正向边界：只允许当前 C++ standard-library
+`Photospider::operation_runtime` 与 `Threads::Threads`。Installed IPC-header gate 采用正向边界：只允许当前 C++ standard-library
 include set 与已安装的 `photospider/` public include；同时明确拒绝 raw JSON、socket address/
 descriptor、file identity、file mapping declaration 与 backend type。这是门禁实际验证的精确
 public-header 边界，并不声称穷举所有可能的 POSIX 拼写。
-`IpcDisabledInstallSmoke` 验证 IPC-disabled clean install 不含 IPC forwarder、header、target、archive
-或 daemon、required `ipc_client` component 不可用，同时 default embedded consumer 仍可用。
 Real-process test 有 CTest timeout 与 bounded
 SIGTERM/SIGKILL/waitpid cleanup。`test_ipc_daemon` 会启动产品 `photospiderd` 以验证 embedded-Host
 行为，也会把 non-installed `ipc_output_fixture_daemon` 作为独立进程启动，以提供 deterministic
