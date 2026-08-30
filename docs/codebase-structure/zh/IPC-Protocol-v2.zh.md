@@ -75,9 +75,13 @@ target_link_libraries(app PRIVATE PhotospiderDaemon::client)
 ```
 
 `PhotospiderDaemonConfig.cmake` 会先解析 `Threads` 与 installed `Photospider`
-`operation_runtime` component，再 import client。standalone producer 还需要 installed
-`embedded`、`operation_runtime`、`operation_plugin_sdk` 与 `policy_sdk` targets，以构建 executable
-和长期 fixtures。任何其他 CMake system name 都会使 configure 显式失败，而不会公告 fake daemon。
+`operation_runtime` component，再 import client。standalone producer 要求 exact supported
+Photospider 0.1.0 package 及其 installed `embedded`、`operation_runtime` targets。
+`BUILD_TESTING=ON` 时，它还为长期 fixtures 要求 `operation_plugin_sdk` 与 `policy_sdk`；
+production-only configure 不请求这些 test-only components。任何其他 CMake system name 都会使
+configure 显式失败，而不会公告 fake daemon。Package compatibility、daemon package compatibility
+与 wire compatibility 彼此独立：两个 0.1 package file 使用 same-minor compatibility，而本 wire
+contract 继续保持精确 protocol version 2。
 
 `daemon.version.methods` 来自 metadata 与 dispatch 前 admission 共用的一张统一表。
 独立的 route-family matcher 能让已 advertisement 但未支持的 route 保持可检测。该表报告以下精确排序的 60-method inventory：

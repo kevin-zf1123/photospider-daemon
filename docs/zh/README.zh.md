@@ -24,18 +24,35 @@ source 通过保留历史的方式从 Photospider commit
 当前产品只支持 Darwin/Linux，是 foreground、same-user、local Unix-domain sidecar；不是
 system service、multi-user service、remote endpoint 或 TCP server。
 
+本仓现处于 IPC v2 compatible-maintenance：接受既有 surface 的 bug fix、package/CI compatibility
+与 lifecycle hardening；不扩展 IPC v3、不序列化 kernel compiler IR，也不接管 kernel Job、policy、
+trust、isolation、worker 或 evidence code。Next-protocol design 在 stable kernel Compiler MVP 前保持 blocked。
+
+## 版本支持
+
+| 版本轴 | 当前值 | 维护规则 |
+| --- | --- | --- |
+| Photospider package | 0.1.0 | producer/client exact dependency；package compatibility 为 same minor |
+| PhotospiderDaemon package | 0.1.0 | package compatibility 为 same minor |
+| IPC protocol | v2 | 精确冻结 60-method surface；不扩展 v3 |
+
+daemon PR CI 固定 supported post-split kernel revision
+`c656ac58046c1d7fdb40372ae575728f526c0f01`。上述 frozen full-stack commit 只用于 four-cell
+旧侧。参见[版本与 CI 兼容契约](Version-and-CI-Compatibility.zh.md)。
+
 ## 构建
 
-先安装 Photospider kernel package。冻结迁移必须使用 exact archive commit，例如：
+先安装 supported post-split Photospider kernel package。当前 0.1 line 使用 pinned supported revision：
 
 ```bash
-git clone --branch full-stack-archive-2026-08-30 \
-  https://github.com/kevin-zf1123/photospider.git /tmp/photospider-kernel
+git clone https://github.com/kevin-zf1123/photospider.git /tmp/photospider-kernel
+git -C /tmp/photospider-kernel checkout --detach \
+  c656ac58046c1d7fdb40372ae575728f526c0f01
 cmake -S /tmp/photospider-kernel -B /tmp/photospider-kernel-build \
   -DBUILD_TESTING=OFF -DPHOTOSPIDER_BUILD_GRAPH_CLI=OFF \
-  -DPHOTOSPIDER_BUILD_IPC=ON \
+  -DPHOTOSPIDER_BUILD_SINGLE_TENANT_JOB=OFF \
   -DCMAKE_INSTALL_PREFIX=/tmp/photospider-prefix
-cmake --build /tmp/photospider-kernel-build --target photospider photospiderd -j
+cmake --build /tmp/photospider-kernel-build --target photospider -j
 cmake --install /tmp/photospider-kernel-build
 ```
 
@@ -52,8 +69,8 @@ cmake --install build --prefix /tmp/photospider-daemon-prefix
 ```
 
 `PHOTOSPIDER_DAEMON_DEPENDENCY_LIBDIR` 把 exact installed kernel runtime dir 写入
-`photospiderd` install RPATH；这是本次 frozen split 的显式 pin。更长 version/ABI window 属于
-独立治理工作。
+`photospiderd` install RPATH。Package discovery 同时要求 `Photospider 0.1.0 EXACT`；改变 supported
+revision/version tuple 是显式 compatibility 工作，不是隐式 main-branch upgrade。
 
 ## Installed client
 
@@ -62,7 +79,7 @@ find_package(PhotospiderDaemon CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE PhotospiderDaemon::client)
 ```
 
-package 只 import public client，并传递查找 installed Photospider `operation_runtime` component
+package 只 import public client，并传递查找 exact Photospider 0.1.0 `operation_runtime` component
 与 Threads。
 
 ## Protocol 与 shutdown 不变量
@@ -84,6 +101,7 @@ migration-only runner 针对 archived client package 与本 package 分别构建
 python3 tools/run_frozen_compatibility_gate.py \
   --source "$PWD" \
   --old-photospider-dir /tmp/old-prefix/lib/cmake/Photospider \
+  --new-photospider-dir /tmp/photospider-prefix/lib/cmake/Photospider \
   --new-photospider-daemon-dir /tmp/new-prefix/lib/cmake/PhotospiderDaemon \
   --old-daemon /tmp/old-prefix/bin/photospiderd \
   --new-daemon /tmp/new-prefix/bin/photospiderd \
@@ -92,3 +110,7 @@ python3 tools/run_frozen_compatibility_gate.py \
 
 runner 故意不注册到 CTest：它是有界 migration evidence；ordinary unit/integration/package
 consumer/daemon lifecycle tests 才是长期 product gate。
+
+PR 与维护分支 push 会在 Ubuntu/macOS 运行该 pinned product gate。每周 Ubuntu-only
+`compatible-main` job 单独检查 current kernel `main`；它是本仓 downstream drift signal，不是每个
+kernel PR 的 required check。
