@@ -3,7 +3,8 @@
 include(CMakeFindDependencyMacro)
 
 find_dependency(Threads)
-find_dependency(Photospider 0.1.0 COMPONENTS operation_runtime)
+find_dependency(Photospider 0.1.0 EXACT CONFIG REQUIRED
+  COMPONENTS operation_runtime)
 
 include("${CMAKE_CURRENT_LIST_DIR}/PhotospiderDaemonTargets.cmake")
 

@@ -92,7 +92,8 @@ def build_probe(
     @param generator Optional CMake generator name.
     @param config Optional build configuration.
     @param osx_architectures Optional Darwin architecture list.
-    @param photospider_dir Installed frozen Photospider package directory.
+    @param photospider_dir Installed Photospider package directory selected for
+      this old or new client probe.
     @param daemon_dir Installed standalone daemon package directory for the new
       client, or None for the frozen old client.
     @param environment Explicit sanitized loader environment.
@@ -384,6 +385,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
     parser.add_argument("--old-photospider-dir", required=True)
+    parser.add_argument("--new-photospider-dir", required=True)
     parser.add_argument("--new-photospider-daemon-dir", required=True)
     parser.add_argument("--old-daemon", required=True)
     parser.add_argument("--new-daemon", required=True)
@@ -429,7 +431,7 @@ def main() -> int:
             generator=args.generator,
             config=args.config,
             osx_architectures=osx_architectures,
-            photospider_dir=Path(args.old_photospider_dir).resolve(strict=True),
+            photospider_dir=Path(args.new_photospider_dir).resolve(strict=True),
             daemon_dir=Path(args.new_photospider_daemon_dir).resolve(strict=True),
             environment=environment,
         )

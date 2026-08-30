@@ -7,11 +7,11 @@ set(PHOTOSPIDER_DAEMON_INTEROP_CLIENT "" CACHE STRING
 set_property(CACHE PHOTOSPIDER_DAEMON_INTEROP_CLIENT PROPERTY STRINGS old new)
 
 if(PHOTOSPIDER_DAEMON_INTEROP_CLIENT STREQUAL "old")
-  find_package(Photospider 0.1.0 REQUIRED COMPONENTS ipc_client)
+  find_package(Photospider 0.1.0 EXACT CONFIG REQUIRED COMPONENTS ipc_client)
   set(PHOTOSPIDER_DAEMON_INTEROP_TARGET
     Photospider::photospider_ipc_client)
 elseif(PHOTOSPIDER_DAEMON_INTEROP_CLIENT STREQUAL "new")
-  find_package(PhotospiderDaemon 0.1.0 REQUIRED)
+  find_package(PhotospiderDaemon 0.1.0 EXACT CONFIG REQUIRED)
   set(PHOTOSPIDER_DAEMON_INTEROP_TARGET PhotospiderDaemon::client)
 else()
   message(FATAL_ERROR

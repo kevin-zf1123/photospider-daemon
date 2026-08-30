@@ -96,10 +96,15 @@ target_link_libraries(app PRIVATE PhotospiderDaemon::client)
 
 `PhotospiderDaemonConfig.cmake` resolves `Threads` and the installed
 `Photospider` `operation_runtime` component before importing the client. The
-standalone producer separately requires the installed `embedded`,
-`operation_runtime`, `operation_plugin_sdk`, and `policy_sdk` targets so it can
-build the executable and maintained fixtures. On any other CMake system name,
-configuration fails explicitly instead of advertising a fake daemon.
+standalone producer requires the exact supported Photospider 0.1.0 package and
+its installed `embedded` and `operation_runtime` targets. When
+`BUILD_TESTING=ON`, it additionally requires `operation_plugin_sdk` and
+`policy_sdk` for maintained fixtures; production-only configuration does not
+request those test-only components. On any other CMake system name,
+configuration fails explicitly instead of advertising a fake daemon. Package
+compatibility, daemon package compatibility, and wire compatibility are
+separate: both 0.1 package files use same-minor compatibility while this wire
+contract remains exact protocol version 2.
 
 `daemon.version.methods` is sourced from one centralized table shared by
 metadata and pre-dispatch admission. Independent route-family matchers keep an

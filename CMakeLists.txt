@@ -30,18 +30,28 @@ set(PHOTOSPIDER_DAEMON_INSTALL_CMAKEDIR
   "Install directory for the PhotospiderDaemon CMake package")
 
 find_package(Threads REQUIRED)
-find_package(Photospider 0.1.0 REQUIRED COMPONENTS
+set(PHOTOSPIDER_DAEMON_PHOTOSPIDER_COMPONENTS
   embedded
-  operation_runtime
-  operation_plugin_sdk
-  policy_sdk)
+  operation_runtime)
+if(BUILD_TESTING)
+  list(APPEND PHOTOSPIDER_DAEMON_PHOTOSPIDER_COMPONENTS
+    operation_plugin_sdk
+    policy_sdk)
+endif()
+find_package(Photospider 0.1.0 EXACT CONFIG REQUIRED COMPONENTS
+  ${PHOTOSPIDER_DAEMON_PHOTOSPIDER_COMPONENTS})
 find_package(nlohmann_json 3.9 REQUIRED)
 
-foreach(REQUIRED_TARGET
+set(PHOTOSPIDER_DAEMON_REQUIRED_PHOTOSPIDER_TARGETS
     Photospider::photospider
-    Photospider::operation_runtime
+    Photospider::operation_runtime)
+if(BUILD_TESTING)
+  list(APPEND PHOTOSPIDER_DAEMON_REQUIRED_PHOTOSPIDER_TARGETS
     Photospider::operation_plugin_sdk
     Photospider::policy_sdk)
+endif()
+foreach(REQUIRED_TARGET
+    IN LISTS PHOTOSPIDER_DAEMON_REQUIRED_PHOTOSPIDER_TARGETS)
   if(NOT TARGET ${REQUIRED_TARGET})
     message(FATAL_ERROR
       "Installed Photospider package omitted required target ${REQUIRED_TARGET}")
@@ -173,7 +183,7 @@ configure_package_config_file(
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/PhotospiderDaemonConfigVersion.cmake"
   VERSION "${PROJECT_VERSION}"
-  COMPATIBILITY SameMajorVersion)
+  COMPATIBILITY SameMinorVersion)
 install(EXPORT PhotospiderDaemonTargets
   FILE PhotospiderDaemonTargets.cmake
   NAMESPACE PhotospiderDaemon::

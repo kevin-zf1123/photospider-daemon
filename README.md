@@ -29,19 +29,39 @@ The current product is a foreground, same-user, local Unix-domain sidecar for
 Darwin and Linux. It is not a system service, multi-user service, remote
 endpoint, or TCP server.
 
+This repository is now in IPC v2 compatible-maintenance. It accepts fixes,
+package/CI compatibility work, and lifecycle hardening for the existing
+surface; it does not expand IPC v3, serialize kernel compiler IR, or take
+ownership of kernel Job, policy, trust, isolation, worker, or evidence code.
+Next-protocol design remains blocked on a stable kernel Compiler MVP.
+
+## Version support
+
+| Axis | Current value | Maintained rule |
+| --- | --- | --- |
+| Photospider package | 0.1.0 | exact producer/client dependency; package compatibility is same minor |
+| PhotospiderDaemon package | 0.1.0 | package compatibility is same minor |
+| IPC protocol | v2 | exact frozen 60-method surface; no v3 expansion |
+
+Daemon pull-request CI pins the supported post-split kernel revision
+`c656ac58046c1d7fdb40372ae575728f526c0f01`. The frozen full-stack commit above
+is used only for the old side of the four-cell gate. See the
+[version and CI compatibility contract](docs/Version-and-CI-Compatibility.md).
+
 ## Build
 
-First install the Photospider kernel package. The frozen migration build uses
-the exact archive commit, for example:
+First install the supported post-split Photospider kernel package. For the
+current 0.1 line, use the pinned supported revision, for example:
 
 ```bash
-git clone --branch full-stack-archive-2026-08-30 \
-  https://github.com/kevin-zf1123/photospider.git /tmp/photospider-kernel
+git clone https://github.com/kevin-zf1123/photospider.git /tmp/photospider-kernel
+git -C /tmp/photospider-kernel checkout --detach \
+  c656ac58046c1d7fdb40372ae575728f526c0f01
 cmake -S /tmp/photospider-kernel -B /tmp/photospider-kernel-build \
   -DBUILD_TESTING=OFF -DPHOTOSPIDER_BUILD_GRAPH_CLI=OFF \
-  -DPHOTOSPIDER_BUILD_IPC=ON \
+  -DPHOTOSPIDER_BUILD_SINGLE_TENANT_JOB=OFF \
   -DCMAKE_INSTALL_PREFIX=/tmp/photospider-prefix
-cmake --build /tmp/photospider-kernel-build --target photospider photospiderd -j
+cmake --build /tmp/photospider-kernel-build --target photospider -j
 cmake --install /tmp/photospider-kernel-build
 ```
 
@@ -58,8 +78,10 @@ cmake --install build --prefix /tmp/photospider-daemon-prefix
 ```
 
 `PHOTOSPIDER_DAEMON_DEPENDENCY_LIBDIR` records the exact installed kernel
-runtime directory in `photospiderd`'s install RPATH. It is an explicit pin for
-this frozen split. Longer version/ABI windows remain separate governance work.
+runtime directory in `photospiderd`'s install RPATH. Package discovery also
+requires `Photospider 0.1.0 EXACT`; changing the supported revision or version
+tuple is deliberate compatibility work rather than an implicit main-branch
+upgrade.
 
 ## Installed client
 
@@ -68,8 +90,8 @@ find_package(PhotospiderDaemon CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE PhotospiderDaemon::client)
 ```
 
-The package imports only the public client. It finds the installed Photospider
-`operation_runtime` component and Threads transitively.
+The package imports only the public client. It finds exact Photospider 0.1.0
+`operation_runtime` and Threads transitively.
 
 ## Protocol and shutdown invariants
 
@@ -92,6 +114,7 @@ new-new cells with separate sockets:
 python3 tools/run_frozen_compatibility_gate.py \
   --source "$PWD" \
   --old-photospider-dir /tmp/old-prefix/lib/cmake/Photospider \
+  --new-photospider-dir /tmp/photospider-prefix/lib/cmake/Photospider \
   --new-photospider-daemon-dir /tmp/new-prefix/lib/cmake/PhotospiderDaemon \
   --old-daemon /tmp/old-prefix/bin/photospiderd \
   --new-daemon /tmp/new-prefix/bin/photospiderd \
@@ -101,3 +124,8 @@ python3 tools/run_frozen_compatibility_gate.py \
 The runner is intentionally not registered with CTest: it is bounded migration
 evidence, while the ordinary unit, integration, package-consumer, and daemon
 lifecycle tests remain the long-lived product gate.
+
+Pull requests and maintained branch pushes run that pinned product gate on
+Ubuntu and macOS. A weekly Ubuntu-only `compatible-main` job separately checks
+current kernel `main`; it is a downstream drift signal in this repository and
+is not a required check for every kernel pull request.
