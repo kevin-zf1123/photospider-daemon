@@ -27,6 +27,14 @@ independent of `BUILD_SHARED_LIBS`; the package defines no shared client ABI.
 Frame, codec, Unix socket, router, Session/Job registries, and server are
 private. No raw binary/protocol escape hatch or server SDK is exported.
 
+`BUILD_TESTING` never changes an object linked into the installed client or
+`photospiderd`. When enabled, it separately compiles the same runtime sources
+as one noninstalled static test variant under a private macro. Lifecycle
+observers, construction/handler fault callbacks, exception controllers, and
+cleanup counts exist only in that variant. A test executable links either the
+production archive or the test variant, never both, so the two private class
+definitions cannot create ODR or duplicate-symbol ambiguity.
+
 The producer discovers the exact supported Photospider 0.x package through
 `find_package(Photospider 0.2 CONFIG REQUIRED COMPONENTS kernel)`. Package
 version updates are deliberate breaking-compatibility work and must pass the

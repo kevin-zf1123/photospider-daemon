@@ -16,7 +16,7 @@
 #include "ipc/frame.hpp"
 #include "ipc/unix_socket.hpp"
 
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
 #include "support/exception_fence_faults.hpp"
 #endif
 
@@ -59,13 +59,13 @@ void write_protocol_failure(
               static_cast<std::ptrdiff_t>(progress->payload_prefix_size));
       request_payload = &prefix;
     }
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
     test::hit_exception_fence_fault(
         test::ExceptionFenceFaultPoint::ProtocolFailureEncode);
 #endif
     auto encoded = encode_protocol_error(status, request_payload);
     if (encoded.ok()) {
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
       test::hit_exception_fence_fault(
           test::ExceptionFenceFaultPoint::ProtocolFailureWrite);
 #endif
@@ -108,7 +108,7 @@ void write_handler_failure(int descriptor, ErrorCode code,
   Status status;
   set_failure_without_allocation(status, code);
   try {
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
     test::hit_exception_fence_fault(
         test::ExceptionFenceFaultPoint::HandlerFailureStatus);
 #endif
@@ -197,18 +197,21 @@ struct Server::Impl final {
    * @param config Validated fixed configuration.
    * @param listener Bound restricted listener descriptor.
    * @throws std::bad_alloc If service/handler storage allocation or the
-   * private construction hook fails that way.
+   * private test-runtime construction hook fails that way.
    * @throws std::system_error If service worker creation fails.
-   * @throws Any other exception deliberately raised by the private test hook.
+   * @throws Any other exception deliberately raised by the private
+   * test-runtime hook.
    * @note The parameter retains RAII ownership through every throwing step;
    * only complete construction transfers the descriptor to `stop()`.
    */
   Impl(ServerConfig config, UniqueDescriptor listener)
       : config(std::move(config)), service(this->config.service) {
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
     if (this->config.construction_hook) {
       this->config.construction_hook(
           ServerConstructionStage::BeforeHandlerStorage);
     }
+#endif
     handlers.reserve(this->config.maximum_active_connections);
     listener_fd.store(listener.release(), std::memory_order_release);
   }
@@ -237,7 +240,7 @@ struct Server::Impl final {
     bool registered = false;
     try {
       std::lock_guard<std::mutex> lock(connections_mutex);
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
       test::hit_exception_fence_fault(
           test::ExceptionFenceFaultPoint::ConnectionRegistration);
 #endif
@@ -248,13 +251,15 @@ struct Server::Impl final {
       return;
     }
     try {
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
       test::hit_exception_fence_fault(
           test::ExceptionFenceFaultPoint::HandlerPrimary);
 #endif
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
       if (config.handler_entry_hook) {
         config.handler_entry_hook();
       }
+#endif
       while (!stopping.load(std::memory_order_acquire)) {
         auto frame = read_frame(descriptor, &frame_progress);
         if (!frame.ok()) {
@@ -400,9 +405,11 @@ Server::Server(ServerConfig config) {
     throw std::runtime_error(listener.status().message);
   }
   try {
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
     if (config.construction_hook) {
       config.construction_hook(ServerConstructionStage::AfterListenerBind);
     }
+#endif
     impl_ = std::make_unique<Impl>(std::move(config), listener.take_value());
   } catch (...) {
     remove_socket_node(socket_path);
@@ -504,6 +511,7 @@ const std::string& Server::socket_path() const noexcept {
   return impl_->config.socket_path;
 }
 
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
 /**
  * @brief Implements active connection-handler count observation.
  * @copydetails Server::active_handler_count
@@ -524,7 +532,6 @@ std::size_t Server::retained_handler_count() const noexcept {
   return impl_->handlers.size();
 }
 
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
 /**
  * @brief Implements private active-descriptor observation for fault tests.
  * @copydetails Server::active_connection_count_for_test

@@ -138,30 +138,33 @@ install(
   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/PhotospiderDaemon)
 
 if(BUILD_TESTING)
+  # Compile the complete runtime independently so private deterministic seams
+  # never alter an object linked into the installed production client. Each
+  # test executable below links exactly one runtime variant, avoiding ODR and
+  # duplicate-symbol ambiguity across static archives.
   add_library(
-    photospider_daemon_exception_test_runtime
+    photospider_daemon_test_runtime
     STATIC
     ${PHOTOSPIDER_DAEMON_CLIENT_SOURCES}
     tests/support/exception_fence_faults.cpp)
   set_target_properties(
-    photospider_daemon_exception_test_runtime
+    photospider_daemon_test_runtime
     PROPERTIES CXX_EXTENSIONS OFF
                CXX_VISIBILITY_PRESET hidden
                VISIBILITY_INLINES_HIDDEN YES)
-  target_compile_features(photospider_daemon_exception_test_runtime
-                          PUBLIC cxx_std_17)
+  target_compile_features(photospider_daemon_test_runtime PUBLIC cxx_std_17)
   target_include_directories(
-    photospider_daemon_exception_test_runtime
+    photospider_daemon_test_runtime
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/lib
             ${CMAKE_CURRENT_SOURCE_DIR}/tests)
   target_link_libraries(
-    photospider_daemon_exception_test_runtime
+    photospider_daemon_test_runtime
     PUBLIC Photospider::kernel
     PRIVATE Threads::Threads)
   target_compile_definitions(
-    photospider_daemon_exception_test_runtime
-    PUBLIC PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES
+    photospider_daemon_test_runtime
+    PUBLIC PHOTOSPIDER_DAEMON_TEST_RUNTIME
     PRIVATE PHOTOSPIDER_DAEMON_VERSION="${PROJECT_VERSION}")
 
   add_executable(test_ipc_codec tests/unit/test_ipc_codec.cpp)
@@ -172,19 +175,19 @@ if(BUILD_TESTING)
   add_executable(test_local_daemon tests/integration/test_local_daemon.cpp)
   target_compile_features(test_local_daemon PRIVATE cxx_std_17)
   target_include_directories(test_local_daemon PRIVATE src/lib tests)
-  target_link_libraries(test_local_daemon PRIVATE photospider_daemon_client)
+  target_link_libraries(test_local_daemon
+                        PRIVATE photospider_daemon_test_runtime)
 
   add_executable(test_exception_fences
                  tests/integration/test_exception_fences.cpp)
   target_compile_features(test_exception_fences PRIVATE cxx_std_17)
   target_include_directories(test_exception_fences PRIVATE src/lib tests)
-  target_link_libraries(
-    test_exception_fences
-    PRIVATE photospider_daemon_exception_test_runtime)
+  target_link_libraries(test_exception_fences
+                        PRIVATE photospider_daemon_test_runtime)
 
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(
-      photospider_daemon_exception_test_runtime
+      photospider_daemon_test_runtime
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(test_ipc_codec
                            PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -194,15 +197,15 @@ if(BUILD_TESTING)
                            PRIVATE -Wall -Wextra -Wpedantic -Werror)
     if(PHOTOSPIDER_DAEMON_ENABLE_ASAN)
       target_compile_options(
-        photospider_daemon_exception_test_runtime
+        photospider_daemon_test_runtime
         PUBLIC -fsanitize=address -fno-omit-frame-pointer)
-      target_link_options(photospider_daemon_exception_test_runtime
+      target_link_options(photospider_daemon_test_runtime
                           PUBLIC -fsanitize=address)
     elseif(PHOTOSPIDER_DAEMON_ENABLE_TSAN)
       target_compile_options(
-        photospider_daemon_exception_test_runtime
+        photospider_daemon_test_runtime
         PUBLIC -fsanitize=thread -fno-omit-frame-pointer)
-      target_link_options(photospider_daemon_exception_test_runtime
+      target_link_options(photospider_daemon_test_runtime
                           PUBLIC -fsanitize=thread)
     endif()
   endif()

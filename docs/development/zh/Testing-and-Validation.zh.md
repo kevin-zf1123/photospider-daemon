@@ -28,6 +28,21 @@ sibling source target 或 private kernel include path。
   `PhotospiderDaemon::client`。专用 `BUILD_SHARED_LIBS=ON` package gate 还证明该
   target 保持为可用 static archive，且不创建 shared client ABI。
 
+## 产品与 test runtime 分离
+
+Installed `PhotospiderDaemon::client` 与正常 `photospiderd` executable 始终使用不含
+test control 的 production object。启用 `BUILD_TESTING=ON` 时，
+`photospider_daemon_test_runtime` 在 `PHOTOSPIDER_DAEMON_TEST_RUNTIME` 下独立编译完整
+runtime source 列表，并加入 fixed exception controller。`test_local_daemon` 与
+`test_exception_fences` 只链接这一不安装的 static variant；正常 binary 与 package
+consumer 只链接 production target。任何 executable 都不会同时链接两个 variant。
+
+修改 private lifecycle seam 后，须对 testing-on 与 testing-off build 的 production
+archive 手动执行 `ar -t`、demangled `nm` 与 `strings` 检查。产品中不得存在 test
+controller、construction stage、fault callback、handler-entry callback、lifecycle
+count observer、test macro 或 test-support object。不安装的 test archive 是正向对照，
+必须保留预期 seam。该 source/package audit 保持为手动检查，不注册为 CTest entry。
+
 ## Sanitizer
 
 ASAN 与 TSAN 是独立 scoped CMake mode，不能同时启用。每个 daemon build 必须消费
