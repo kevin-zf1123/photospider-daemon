@@ -90,8 +90,8 @@ jobs:
       - name: Build focused sanitizer targets
         run: >-
           cmake --build build-${{ matrix.sanitizer }} --parallel
-          --target test_ipc_codec test_local_daemon
+          --target test_ipc_codec test_sigpipe_transport test_local_daemon
       - name: Run focused sanitizer tests
         run: >-
           ctest --test-dir build-${{ matrix.sanitizer }} --output-on-failure
-          -R 'test_(ipc_codec|local_daemon)$'
+          -R 'test_(ipc_codec|sigpipe_transport|local_daemon)$'

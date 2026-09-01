@@ -32,11 +32,14 @@ uint32 payload_size，big-endian
 payload_size bytes typed binary payload
 ```
 
-`payload_size` 范围为 `1..4,194,304`。read/write 处理 partial progress 与 `EINTR`；
-平台支持时 send 抑制 `SIGPIPE`。zero、oversized、truncated 或 trailing bytes 会使
-完整 message 被拒绝。Server 在受控 close 前发送一个 bounded typed failure，且绝不
-根据攻击者声明的 frame length 分配内存。Reader 最多保留固定十一字节 request header
-用于 correlation，并只随实际到达的 byte 增长完整 payload storage。
+`payload_size` 范围为 `1..4,194,304`。read/write 处理 partial progress 与 `EINTR`。
+Linux send 使用 `MSG_NOSIGNAL`。Darwin 在 connect 前为每个 client stream、在 peer
+validation 前为每个 accepted stream 配置 `SO_NOSIGPIPE`；配置失败会关闭 descriptor
+并返回 typed transport failure。进程级 `SIGPIPE` disposition 不会被修改。zero、
+oversized、truncated 或 trailing bytes 会使完整 message 被拒绝。Server 在受控 close
+前发送一个 bounded typed failure，且绝不根据攻击者声明的 frame length 分配内存。
+Reader 最多保留固定十一字节 request header 用于 correlation，并只随实际到达的 byte
+增长完整 payload storage。
 
 Payload 内 integer 使用 little-endian。Text/byte vector 使用 little-endian uint32
 byte count，随后是精确 bytes。Text 必须是 canonical UTF-8，并遵守 field-specific
