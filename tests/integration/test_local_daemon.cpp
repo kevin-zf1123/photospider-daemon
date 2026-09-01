@@ -794,7 +794,7 @@ int main() {
   }
 
   {
-    // QueuedCancellationTransitionsThroughRunning regression.
+    // QueuedCancellationAndSessionCloseIsolation regression.
     const std::string queued_cancel_path = socket_path();
     internal::Server server(
         internal::ServerConfig{queued_cancel_path,
@@ -806,33 +806,69 @@ int main() {
     auto server_result = start_server(&server);
     Client client;
     PS_IPC_CHECK(client.connect(queued_cancel_path).ok());
-    auto running_session = client.session_create(
+    auto session_a = client.session_create(
         delayed_document(kWorkerSaturationDelayMilliseconds));
-    auto queued_session = client.session_create(addition_document(1.0, 2.0));
-    PS_IPC_CHECK(running_session.ok());
-    PS_IPC_CHECK(queued_session.ok());
-    auto running_a = client.job_submit(running_session.value());
-    auto running_b = client.job_submit(running_session.value());
-    PS_IPC_CHECK(running_a.ok());
-    PS_IPC_CHECK(running_b.ok());
-    PS_IPC_CHECK(
-        wait_state(&client, running_a.value(), JobState::Running).state ==
-        JobState::Running);
-    PS_IPC_CHECK(
-        wait_state(&client, running_b.value(), JobState::Running).state ==
-        JobState::Running);
+    auto session_b = client.session_create(
+        delayed_document(kWorkerSaturationDelayMilliseconds));
+    PS_IPC_CHECK(session_a.ok());
+    PS_IPC_CHECK(session_b.ok());
+    auto job_a = client.job_submit(session_a.value());
+    auto job_b = client.job_submit(session_b.value());
+    PS_IPC_CHECK(job_a.ok());
+    PS_IPC_CHECK(job_b.ok());
+    const auto running_a =
+        wait_state(&client, job_a.value(), JobState::Running);
+    const auto running_b =
+        wait_state(&client, job_b.value(), JobState::Running);
+    PS_IPC_CHECK(running_a.state == JobState::Running);
+    PS_IPC_CHECK(running_a.session_id.instance == session_a.value().instance);
+    PS_IPC_CHECK(running_a.session_id.value == session_a.value().value);
+    PS_IPC_CHECK(running_b.state == JobState::Running);
+    PS_IPC_CHECK(running_b.session_id.instance == session_b.value().instance);
+    PS_IPC_CHECK(running_b.session_id.value == session_b.value().value);
 
-    auto queued = client.job_submit(queued_session.value());
-    PS_IPC_CHECK(queued.ok());
-    PS_IPC_CHECK(wait_state(&client, queued.value(), JobState::Queued).state ==
-                 JobState::Queued);
-    PS_IPC_CHECK(client.job_cancel(queued.value()).ok());
+    auto job_c = client.job_submit(session_b.value());
+    PS_IPC_CHECK(job_c.ok());
+    const auto queued = wait_state(&client, job_c.value(), JobState::Queued);
+    PS_IPC_CHECK(queued.state == JobState::Queued);
+    PS_IPC_CHECK(queued.session_id.instance == session_b.value().instance);
+    PS_IPC_CHECK(queued.session_id.value == session_b.value().value);
+    PS_IPC_CHECK(client.job_cancel(job_c.value()).ok());
 
     const auto close_started = std::chrono::steady_clock::now();
-    PS_IPC_CHECK(client.session_close(running_session.value()).ok());
+    PS_IPC_CHECK(client.session_close(session_a.value()).ok());
     PS_IPC_CHECK(std::chrono::steady_clock::now() - close_started <
                  kSessionCloseTimeout);
-    for (const JobId id : {running_a.value(), running_b.value()}) {
+    auto missing_a_status = client.job_status(job_a.value());
+    auto missing_a_result = client.job_result(job_a.value());
+    PS_IPC_CHECK(!missing_a_status.ok());
+    PS_IPC_CHECK(missing_a_status.status().code == ErrorCode::NotFound);
+    PS_IPC_CHECK(!missing_a_result.ok());
+    PS_IPC_CHECK(missing_a_result.status().code == ErrorCode::NotFound);
+
+    auto surviving_b = client.job_status(job_b.value());
+    PS_IPC_CHECK(surviving_b.ok());
+    PS_IPC_CHECK(surviving_b.value().state == JobState::Running);
+    PS_IPC_CHECK(surviving_b.value().session_id.instance ==
+                 session_b.value().instance);
+    PS_IPC_CHECK(surviving_b.value().session_id.value ==
+                 session_b.value().value);
+    auto pending_b_result = client.job_result(job_b.value());
+    PS_IPC_CHECK(!pending_b_result.ok());
+    PS_IPC_CHECK(pending_b_result.status().code == ErrorCode::InvalidArgument);
+
+    PS_IPC_CHECK(wait_terminal(&client, job_c.value()).state ==
+                 JobState::Cancelled);
+    auto cancelled_result = client.job_result(job_c.value());
+    PS_IPC_CHECK(!cancelled_result.ok());
+    PS_IPC_CHECK(cancelled_result.status().code == ErrorCode::Cancelled);
+    auto retained = client.daemon_info();
+    PS_IPC_CHECK(retained.ok());
+    PS_IPC_CHECK(retained.value().active_sessions == 1U);
+    PS_IPC_CHECK(retained.value().active_jobs == 2U);
+
+    PS_IPC_CHECK(client.session_close(session_b.value()).ok());
+    for (const JobId id : {job_b.value(), job_c.value()}) {
       auto missing_status = client.job_status(id);
       auto missing_result = client.job_result(id);
       PS_IPC_CHECK(!missing_status.ok());
@@ -840,23 +876,6 @@ int main() {
       PS_IPC_CHECK(!missing_result.ok());
       PS_IPC_CHECK(missing_result.status().code == ErrorCode::NotFound);
     }
-    PS_IPC_CHECK(wait_terminal(&client, queued.value()).state ==
-                 JobState::Cancelled);
-    auto cancelled_result = client.job_result(queued.value());
-    PS_IPC_CHECK(!cancelled_result.ok());
-    PS_IPC_CHECK(cancelled_result.status().code == ErrorCode::Cancelled);
-    auto retained = client.daemon_info();
-    PS_IPC_CHECK(retained.ok());
-    PS_IPC_CHECK(retained.value().active_sessions == 1U);
-    PS_IPC_CHECK(retained.value().active_jobs == 1U);
-
-    PS_IPC_CHECK(client.session_close(queued_session.value()).ok());
-    auto missing_status = client.job_status(queued.value());
-    auto missing_result = client.job_result(queued.value());
-    PS_IPC_CHECK(!missing_status.ok());
-    PS_IPC_CHECK(missing_status.status().code == ErrorCode::NotFound);
-    PS_IPC_CHECK(!missing_result.ok());
-    PS_IPC_CHECK(missing_result.status().code == ErrorCode::NotFound);
     auto released = client.daemon_info();
     PS_IPC_CHECK(released.ok());
     PS_IPC_CHECK(released.value().active_sessions == 0U);
