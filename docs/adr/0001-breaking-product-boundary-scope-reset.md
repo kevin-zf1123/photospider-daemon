@@ -130,6 +130,16 @@ blocked local connections, joins owned threads, releases results and Sessions,
 removes only the verified socket path, and exits. Signal shutdown uses the
 same cleanup path. Process restart begins with empty registries.
 
+Before constructing Server or service workers, `photospiderd` blocks
+`SIGINT`, `SIGTERM`, and one waiter-only `SIGUSR1` completion wake. A dedicated
+thread synchronously consumes the blocked set with `sigwait`; external stop
+signals invoke only thread-safe `Server::request_stop`. Normal RPC shutdown
+sets a completion flag, directs `SIGUSR1` to the waiter, and joins it. Ordinary
+control flow then destroys Server/service state, cancels and joins work,
+performs generation-checked socket cleanup, drains pending managed signals,
+and restores the main thread's original mask. No asynchronous handler runs C++
+cleanup and no process-wide signal ignore is installed.
+
 Connection handling has one positive process-global active-handler bound.
 Admission beyond that bound returns `ResourceExhausted` and closes without
 starting a thread. Handler threads remain joinable; the accept loop joins and

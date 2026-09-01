@@ -175,6 +175,14 @@ requests cancellation, joins fixed workers, and releases every Session, Job,
 result, GraphContext, kernel execution resource, descriptor, and socket node.
 The next process starts with empty registries.
 
+The POSIX executable blocks `SIGINT`/`SIGTERM` before constructing the Server
+or any worker and consumes them synchronously on a dedicated `sigwait` thread.
+That thread only requests the same stop path. An additionally blocked
+waiter-only `SIGUSR1` wakes normal `daemon.shutdown` completion so the waiter
+joins without polling; after Server/workers are destroyed, the original main-
+thread signal mask is restored. Signal handling never runs C++ cleanup from an
+asynchronous handler and never installs global `SIG_IGN`.
+
 The server also enforces one positive global active-connection/handler bound.
 An excess connection receives a sentinel `ResourceExhausted` protocol error
 and closes without starting a thread. Accepted handler threads remain

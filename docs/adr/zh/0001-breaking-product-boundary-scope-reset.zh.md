@@ -115,6 +115,14 @@ connection、join 自有线程、释放 result 与 Session、只移除经过验�
 然后退出。Signal shutdown 使用同一 cleanup path。进程 restart 从空 registry
 开始。
 
+`photospiderd` 在构造 Server/service worker 前阻塞 `SIGINT`、`SIGTERM` 与一个仅供
+waiter 完成唤醒的 `SIGUSR1`。专用 thread 使用 `sigwait` 同步消费 blocked set；外部
+stop signal 只调用 thread-safe `Server::request_stop`。普通 RPC shutdown 设置
+completion flag、定向发送 `SIGUSR1` 唤醒 waiter 并 join。随后 ordinary control flow
+销毁 Server/service state、取消并 join work、执行 generation-checked socket cleanup、
+drain pending managed signal，并恢复 main thread 原始 mask。没有 asynchronous handler
+执行 C++ cleanup，也不安装 process-wide signal ignore。
+
 Connection handling 具有一个正值、进程全局的 active-handler bound。超过该 bound 的
 admission 返回 `ResourceExhausted`，并在不启动 thread 的情况下关闭。Handler thread
 保持 joinable；accept loop 在 server 运行时 join 并删除 completed record，shutdown

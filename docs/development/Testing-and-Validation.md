@@ -28,6 +28,10 @@ never a sibling source target or private kernel include path.
   sequential runtime reaping, exception fencing, shutdown join, and
   deterministic post-bind construction failures with descriptor/node cleanup
   plus same-path rebinding.
+- Real `photospiderd` subprocess tests send `SIGINT`, send `SIGTERM` after a
+  five-second cooperative Job reaches Running, and invoke `daemon.shutdown`.
+  They require bounded `exit(0)`, generation-checked socket removal, and
+  cancellation/join well before the delayed operation could drain naturally.
 - Installed-consumer tests prove that `bin/photospiderd` is installed while
   only `PhotospiderDaemon::client` appears in the CMake export set. A dedicated
   `BUILD_SHARED_LIBS=ON` package gate also proves that this target remains a

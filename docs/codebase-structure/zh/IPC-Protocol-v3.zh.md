@@ -161,6 +161,12 @@ fixed global concurrency，以及 fixed retained-Session bound。
 并释放全部 Session、Job、result、GraphContext、kernel execution resource、descriptor
 与 socket node。下一个 process 从 empty registry 开始。
 
+POSIX executable 在构造 Server 或任何 worker 前阻塞 `SIGINT`/`SIGTERM`，并由专用
+`sigwait` thread 同步消费；该 thread 只请求同一 stop path。另一个预先阻塞、仅供
+waiter 使用的 `SIGUSR1` 会在普通 `daemon.shutdown` 完成时唤醒 waiter，使其无需 polling
+即可 join；Server/worker 销毁后恢复 main thread 原始 signal mask。Signal handling
+绝不在 asynchronous handler 中运行 C++ cleanup，也不安装 global `SIG_IGN`。
+
 Server 还强制执行一个正值、全局 active-connection/handler bound。Excess connection
 收到 sentinel `ResourceExhausted` protocol error，并在不启动 thread 的情况下关闭。
 Accepted handler thread 保持 joinable；accept loop 在正常运行期 reap completed thread，
