@@ -190,6 +190,16 @@ if(BUILD_TESTING)
   target_link_libraries(test_socket_ownership
                         PRIVATE photospider_daemon_client)
 
+  add_executable(test_photospiderd_signals
+                 tests/integration/test_photospiderd_signals.cpp)
+  target_compile_features(test_photospiderd_signals PRIVATE cxx_std_17)
+  target_include_directories(test_photospiderd_signals PRIVATE src/lib tests)
+  target_link_libraries(test_photospiderd_signals
+                        PRIVATE photospider_daemon_client)
+  target_compile_definitions(
+    test_photospiderd_signals
+    PRIVATE PS_PHOTOSPIDERD_PATH="$<TARGET_FILE:photospiderd>")
+
   add_executable(test_exception_fences
                  tests/integration/test_exception_fences.cpp)
   target_compile_features(test_exception_fences PRIVATE cxx_std_17)
@@ -208,6 +218,8 @@ if(BUILD_TESTING)
     target_compile_options(test_local_daemon
                            PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(test_socket_ownership
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(test_photospiderd_signals
                            PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(test_exception_fences
                            PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -230,6 +242,16 @@ if(BUILD_TESTING)
   add_test(NAME test_sigpipe_transport COMMAND test_sigpipe_transport)
   add_test(NAME test_local_daemon COMMAND test_local_daemon)
   add_test(NAME test_socket_ownership COMMAND test_socket_ownership)
+  add_test(NAME test_photospiderd_sigint COMMAND test_photospiderd_signals sigint)
+  add_test(NAME test_photospiderd_sigterm_delayed
+           COMMAND test_photospiderd_signals sigterm-delayed)
+  add_test(NAME test_photospiderd_rpc_shutdown
+           COMMAND test_photospiderd_signals rpc-shutdown)
+  set_tests_properties(
+    test_photospiderd_sigint
+    test_photospiderd_sigterm_delayed
+    test_photospiderd_rpc_shutdown
+    PROPERTIES TIMEOUT 10)
   add_test(NAME test_exception_fences COMMAND test_exception_fences)
   add_test(NAME test_exception_fences_handler_bad_alloc
            COMMAND test_exception_fences handler-bad-alloc)

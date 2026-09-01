@@ -24,6 +24,10 @@ sibling source target 或 private kernel include path。
 - Server test 覆盖正值 active-handler bound、typed backpressure、顺序运行期 reaping、
   exception fencing、shutdown join，以及带 descriptor/node cleanup 与 same-path rebind 的
   deterministic post-bind construction failure。
+- 真实 `photospiderd` subprocess test 会发送 `SIGINT`、在五秒 cooperative Job 到达
+  Running 后发送 `SIGTERM`，并调用 `daemon.shutdown`。它们要求有界 `exit(0)`、
+  generation-checked socket removal，以及在 delayed operation 自然结束前完成
+  cancellation/join。
 - Installed-consumer test 证明 `bin/photospiderd` 已安装，同时 CMake export set 只含
   `PhotospiderDaemon::client`。专用 `BUILD_SHARED_LIBS=ON` package gate 还证明该
   target 保持为可用 static archive，且不创建 shared client ABI。

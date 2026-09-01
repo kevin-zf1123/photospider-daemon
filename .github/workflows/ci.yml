@@ -91,8 +91,8 @@ jobs:
         run: >-
           cmake --build build-${{ matrix.sanitizer }} --parallel
           --target test_ipc_codec test_sigpipe_transport test_local_daemon
-          test_socket_ownership
+          test_socket_ownership test_photospiderd_signals
       - name: Run focused sanitizer tests
         run: >-
           ctest --test-dir build-${{ matrix.sanitizer }} --output-on-failure
-          -R 'test_(ipc_codec|sigpipe_transport|local_daemon|socket_ownership)$'
+          -R 'test_(ipc_codec|sigpipe_transport|local_daemon|socket_ownership|photospiderd_(sigint|sigterm_delayed|rpc_shutdown))$'
