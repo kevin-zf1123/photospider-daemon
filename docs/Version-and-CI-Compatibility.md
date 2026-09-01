@@ -21,10 +21,12 @@ Daemon CI:
 2. configures, builds, and installs the kernel to a fresh prefix;
 3. configures the daemon using only that prefix;
 4. builds, runs CTest, installs, and runs an external typed-client consumer;
-5. runs binary-codec, real-process Session/Job/cancellation/result/restart/
-   shutdown, executable-help, and installed-client tests; and
-6. runs separate Clang ASAN and TSAN configure/build/CTest jobs against the
-   same installed-kernel boundary.
+5. runs binary-codec, socket ownership/SIGPIPE, real-process signal and RPC
+   shutdown, Session/Job/cancellation/result/restart, executable-help, and
+   installed-client tests; and
+6. runs separate bounded Clang ASAN and TSAN configure/build/CTest jobs against
+   the same installed-kernel boundary, with deterministic test teardown and
+   per-test timeout protection.
 
 The installed-client gate also proves that `bin/photospiderd` exists while the
 generated export set contains exactly `PhotospiderDaemon::client` and no

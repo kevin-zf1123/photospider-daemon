@@ -22,6 +22,7 @@
 #include "orchestration/service.hpp"
 #include "photospider/ipc/client.hpp"
 #include "server/server.hpp"
+#include "support/server_run_guard.hpp"
 #include "support/test_support.hpp"
 
 namespace internal = ps::ipc::internal;
@@ -166,18 +167,6 @@ std::string socket_path() {
   static std::atomic<std::uint32_t> sequence{0U};
   return "/tmp/psd-v3-" + std::to_string(::getpid()) + "-" +
          std::to_string(sequence.fetch_add(1U)) + ".sock";
-}
-
-/**
- * @brief Starts a bound server's blocking accept loop asynchronously.
- * @param server Nonnull bound server that outlives the returned future.
- * @return Future resolving to the server run status.
- * @throws std::bad_alloc If asynchronous state allocation fails.
- * @throws std::system_error If the test thread cannot be started.
- * @note Exactly one async run is started per server.
- */
-std::future<ps::Status> start_server(ps::ipc::internal::Server* server) {
-  return std::async(std::launch::async, [server] { return server->run(); });
 }
 
 /**
@@ -467,6 +456,27 @@ void wait_handler_count(ps::ipc::internal::Server* server,
   throw std::runtime_error("server handler count did not settle");
 }
 
+/**
+ * @brief Settles old handlers and explicitly drives accept-loop record reaping.
+ * @param server Running test-runtime Server.
+ * @param path Exact bound socket path.
+ * @throws std::runtime_error If active settlement or the trigger RPC fails.
+ * @throws std::bad_alloc If client/response allocation fails.
+ * @note Runtime reaping occurs before a newly accepted handler is recorded.
+ * Waiting for active zero first makes every old completion flag observable;
+ * the trigger connection then causes those old records to be joined/erased.
+ */
+void settle_handlers_and_trigger_reap(ps::ipc::internal::Server* server,
+                                      const std::string& path) {
+  wait_handler_count(server, 0U);
+  ps::ipc::Client trigger;
+  if (!trigger.connect(path).ok() || !trigger.daemon_info().ok()) {
+    throw std::runtime_error("could not trigger finished-handler reaping");
+  }
+  trigger.disconnect();
+  wait_handler_count(server, 0U);
+}
+
 }  // namespace
 
 /**
@@ -600,7 +610,7 @@ int main() {
                                4U,
                                {},
                                {}});
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
 
     const internal::Response oversized = malformed_stream_response(
         malformed_path, {0xffU, 0xffU, 0xffU, 0xffU}, false);
@@ -667,6 +677,8 @@ int main() {
     PS_IPC_CHECK(duplicate_response.request_id == 303U);
     PS_IPC_CHECK(duplicate_response.method == internal::Method::SessionCreate);
 
+    settle_handlers_and_trigger_reap(&server, malformed_path);
+    PS_IPC_CHECK(server.retained_handler_count() <= 1U);
     for (std::size_t iteration = 0U; iteration < 50U; ++iteration) {
       Client sequential;
       PS_IPC_CHECK(sequential.connect(malformed_path).ok());
@@ -682,7 +694,7 @@ int main() {
     PS_IPC_CHECK(healthy_info.value().active_sessions == 0U);
     PS_IPC_CHECK(server.retained_handler_count() <= 1U);
     PS_IPC_CHECK(healthy.daemon_shutdown().ok());
-    PS_IPC_CHECK(server_result.get().ok());
+    PS_IPC_CHECK(server_run.join().ok());
     PS_IPC_CHECK(server.active_handler_count() == 0U);
     PS_IPC_CHECK(server.retained_handler_count() == 0U);
   }
@@ -696,7 +708,7 @@ int main() {
                                1U,
                                {},
                                {}});
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
     auto held = internal::connect_unix_socket(bounded_path);
     PS_IPC_CHECK(held.ok());
     internal::UniqueDescriptor held_connection = held.take_value();
@@ -714,7 +726,7 @@ int main() {
     Client shutdown_client;
     PS_IPC_CHECK(shutdown_client.connect(bounded_path).ok());
     PS_IPC_CHECK(shutdown_client.daemon_shutdown().ok());
-    PS_IPC_CHECK(server_result.get().ok());
+    PS_IPC_CHECK(server_run.join().ok());
     PS_IPC_CHECK(server.active_handler_count() == 0U);
     PS_IPC_CHECK(server.retained_handler_count() == 0U);
   }
@@ -735,7 +747,7 @@ int main() {
       }
     };
     internal::Server server(std::move(exception_config));
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
     const internal::Response exception_response =
         malformed_stream_response(exception_path, {}, false);
     PS_IPC_CHECK(exception_response.request_id == 0U);
@@ -745,7 +757,7 @@ int main() {
     PS_IPC_CHECK(recovered.connect(exception_path).ok());
     PS_IPC_CHECK(recovered.daemon_info().ok());
     PS_IPC_CHECK(recovered.daemon_shutdown().ok());
-    PS_IPC_CHECK(server_result.get().ok());
+    PS_IPC_CHECK(server_run.join().ok());
     PS_IPC_CHECK(server.active_handler_count() == 0U);
     PS_IPC_CHECK(server.retained_handler_count() == 0U);
   }
@@ -760,7 +772,7 @@ int main() {
                                64U,
                                {},
                                {}});
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
     Client client;
     PS_IPC_CHECK(client.connect(closing_path).ok());
     auto session = client.session_create(delayed_document(5000));
@@ -790,7 +802,7 @@ int main() {
     PS_IPC_CHECK(after_close.value().active_sessions == 0U);
     PS_IPC_CHECK(after_close.value().active_jobs == 0U);
     PS_IPC_CHECK(client.daemon_shutdown().ok());
-    PS_IPC_CHECK(server_result.get().ok());
+    PS_IPC_CHECK(server_run.join().ok());
   }
 
   {
@@ -803,7 +815,7 @@ int main() {
                                64U,
                                {},
                                {}});
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
     Client client;
     PS_IPC_CHECK(client.connect(queued_cancel_path).ok());
     auto session_a = client.session_create(
@@ -881,7 +893,7 @@ int main() {
     PS_IPC_CHECK(released.value().active_sessions == 0U);
     PS_IPC_CHECK(released.value().active_jobs == 0U);
     PS_IPC_CHECK(client.daemon_shutdown().ok());
-    PS_IPC_CHECK(server_result.get().ok());
+    PS_IPC_CHECK(server_run.join().ok());
   }
 
   const std::string path = socket_path();
@@ -896,7 +908,7 @@ int main() {
                                64U,
                                {},
                                {}});
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
 
     Client client;
     PS_IPC_CHECK(client.connect(path).ok());
@@ -1008,7 +1020,7 @@ int main() {
     old_instance = info.value().instance_id;
 
     PS_IPC_CHECK(client.daemon_shutdown().ok());
-    PS_IPC_CHECK(server_result.get().ok());
+    PS_IPC_CHECK(server_run.join().ok());
   }
 
   {
@@ -1019,7 +1031,7 @@ int main() {
                                64U,
                                {},
                                {}});
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
     Client client;
     PS_IPC_CHECK(client.connect(path).ok());
     auto info = client.daemon_info();
@@ -1044,7 +1056,7 @@ int main() {
     PS_IPC_CHECK(new_job.value().instance != old_job.instance);
     PS_IPC_CHECK(!client.job_status(old_job).ok());
     PS_IPC_CHECK(client.daemon_shutdown().ok());
-    PS_IPC_CHECK(server_result.get().ok());
+    PS_IPC_CHECK(server_run.join().ok());
   }
   return 0;
 }

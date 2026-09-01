@@ -23,7 +23,10 @@ sibling source target 或 private kernel include path。
   close/reuse、精确 cleanup 与 concurrent admission。
 - Server test 覆盖正值 active-handler bound、typed backpressure、顺序运行期 reaping、
   exception fencing、shutdown join，以及带 descriptor/node cleanup 与 same-path rebind 的
-  deterministic post-bind construction failure。
+  deterministic post-bind construction failure。每个 asynchronous Server test 都使用
+  fail-safe run guard，在 assertion return 或 exception 时先 request stop 再 join。
+  Handler-count assertion 会先等待 active zero，再显式驱动一次 accept-loop reap，而不是
+  只依赖经过的时间。
 - 真实 `photospiderd` subprocess test 会发送 `SIGINT`、在五秒 cooperative Job 到达
   Running 后发送 `SIGTERM`，并调用 `daemon.shutdown`。它们要求有界 `exit(0)`、
   generation-checked socket removal，以及在 delayed operation 自然结束前完成
@@ -68,8 +71,11 @@ cmake --build <tsan-build> -j
 ctest --test-dir <tsan-build> --output-on-failure
 ```
 
-CI workflow 保持独立 ASAN/TSAN job。平台或 runtime limitation 必须记录为 limitation，
-绝不能冒充 successful sanitizer result。
+CI workflow 保持独立 ASAN/TSAN job，并设置十分钟 job bound。`test_local_daemon` 还有
+120 秒 CTest timeout，远小于 hosted runner watchdog，同时给 TSAN 留出相称余量。Timeout
+只是最终 fail-fast boundary；deterministic lifecycle settlement 与 RAII teardown 才是
+根因修复。平台或 runtime limitation 必须记录为 limitation，绝不能冒充 successful
+sanitizer result。
 
 ## 手动 frame/codec fuzz
 
