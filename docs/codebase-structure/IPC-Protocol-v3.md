@@ -33,7 +33,10 @@ payload_size bytes of typed binary payload
 ```
 
 `payload_size` is `1..4,194,304`. Reads and writes handle partial progress and
-`EINTR`; sends suppress `SIGPIPE` where the platform supports it. Zero,
+`EINTR`. Linux sends use `MSG_NOSIGNAL`. Darwin configures `SO_NOSIGPIPE` on
+each client stream before connect and on each accepted stream before peer
+validation; configuration failure closes the descriptor and returns a typed
+transport failure. No process-global `SIGPIPE` disposition is changed. Zero,
 oversized, truncated, or trailing bytes reject the complete message. The
 server sends one bounded typed failure before controlled close and never
 allocates from the attacker-declared frame length. The reader retains at most

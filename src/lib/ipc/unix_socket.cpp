@@ -45,6 +45,40 @@ Status errno_status(const std::string& action) {
 }
 
 /**
+ * @brief Configures one connected-stream descriptor against process SIGPIPE.
+ * @param descriptor Newly created client or newly accepted stream descriptor.
+ * @return Success, or typed transport failure from Darwin `setsockopt`.
+ * @throws std::bad_alloc If failure diagnostic allocation fails.
+ * @note Darwin uses descriptor-level `SO_NOSIGPIPE`; Linux retains per-send
+ * `MSG_NOSIGNAL` in the frame writer. No process signal disposition changes.
+ */
+Status configure_no_sigpipe(int descriptor) {
+#if defined(__APPLE__)
+  const int enabled = 1;
+  if (::setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &enabled,
+                   sizeof(enabled)) != 0) {
+    return errno_status("could not suppress local socket SIGPIPE");
+  }
+#else
+  static_cast<void>(descriptor);
+#endif
+  return Status::success();
+}
+
+/**
+ * @brief Applies SIGPIPE configuration while owning rollback closure.
+ * @param descriptor Exact descriptor ownership to configure.
+ * @return Prepared ownership or typed transport failure.
+ * @throws std::bad_alloc If failure diagnostic allocation fails.
+ * @note Any failure destroys the local owner before returning to the caller.
+ */
+Result<UniqueDescriptor> prepare_stream(UniqueDescriptor descriptor) {
+  Status status = configure_no_sigpipe(descriptor.get());
+  return status.ok() ? Result<UniqueDescriptor>(std::move(descriptor))
+                     : Result<UniqueDescriptor>(std::move(status));
+}
+
+/**
  * @brief Verifies a connected peer belongs to the current effective uid.
  * @param descriptor Connected local stream descriptor.
  * @return Success only after a supported platform peer-uid check passes.
@@ -145,6 +179,11 @@ Result<UniqueDescriptor> connect_unix_socket(const std::string& path) {
     return Result<UniqueDescriptor>(
         errno_status("could not create local socket"));
   }
+  auto prepared = prepare_stream(std::move(descriptor));
+  if (!prepared.ok()) {
+    return Result<UniqueDescriptor>(prepared.status());
+  }
+  descriptor = prepared.take_value();
   if (::connect(descriptor.get(),
                 reinterpret_cast<const sockaddr*>(&address.value()),
                 sizeof(sockaddr_un)) != 0) {
@@ -218,6 +257,11 @@ Result<UniqueDescriptor> accept_same_user(int listener) {
     return Result<UniqueDescriptor>(errno_status("local accept failed"));
   }
   UniqueDescriptor owned(descriptor);
+  auto prepared = prepare_stream(std::move(owned));
+  if (!prepared.ok()) {
+    return Result<UniqueDescriptor>(prepared.status());
+  }
+  owned = prepared.take_value();
   Status status = verify_same_user(descriptor);
   if (!status.ok()) {
     return Result<UniqueDescriptor>(std::move(status));
@@ -246,5 +290,15 @@ void remove_socket_node(const std::string& path) noexcept {
     ::unlink(path.c_str());
   }
 }
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/**
+ * @brief Implements noninstalled SIGPIPE preparation failure verification.
+ * @copydetails prepare_stream_for_test
+ */
+Result<UniqueDescriptor> prepare_stream_for_test(int descriptor) {
+  return prepare_stream(UniqueDescriptor(descriptor));
+}
+#endif
 
 }  // namespace ps::ipc::internal

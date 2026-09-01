@@ -104,7 +104,9 @@ class UniqueDescriptor final {
  * @param path Exact local filesystem socket path.
  * @return Connected owned descriptor or typed argument/transport failure.
  * @throws std::bad_alloc If path or diagnostic allocation fails.
- * @note No discovery, retry, remote endpoint, or daemon start is performed.
+ * @note Darwin configures descriptor-level `SO_NOSIGPIPE` before connect. A
+ * configuration failure closes the descriptor and publishes no connection.
+ * No discovery, retry, remote endpoint, or daemon start is performed.
  */
 [[nodiscard]] Result<UniqueDescriptor> connect_unix_socket(
     const std::string& path);
@@ -126,7 +128,9 @@ class UniqueDescriptor final {
  * @param listener Valid listening descriptor.
  * @return Connected descriptor or typed accept/peer failure.
  * @throws std::bad_alloc If a failure diagnostic allocation fails.
- * @note A peer rejected by the same-user check is closed before return.
+ * @note Darwin configures descriptor-level `SO_NOSIGPIPE` immediately after
+ * accept. A configuration failure and a rejected peer are closed before
+ * return.
  */
 [[nodiscard]] Result<UniqueDescriptor> accept_same_user(int listener);
 
@@ -145,5 +149,18 @@ void shutdown_descriptor(int descriptor) noexcept;
  * @note Non-socket filesystem objects are never removed.
  */
 void remove_socket_node(const std::string& path) noexcept;
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/**
+ * @brief Applies production connected-stream SIGPIPE preparation in tests.
+ * @param descriptor Descriptor whose ownership transfers to this function.
+ * @return Prepared owned descriptor or typed platform failure.
+ * @throws std::bad_alloc If failure diagnostic allocation fails.
+ * @note Failure closes the supplied descriptor. This seam is compiled only
+ * into the noninstalled test runtime so Darwin can verify `setsockopt`
+ * failure ownership without changing production syscalls.
+ */
+[[nodiscard]] Result<UniqueDescriptor> prepare_stream_for_test(int descriptor);
+#endif
 
 }  // namespace ps::ipc::internal

@@ -113,13 +113,15 @@ Status read_payload(int descriptor, std::size_t size,
  * @param size Exact count.
  * @return Success or transport failure.
  * @throws std::bad_alloc If a failure diagnostic allocation fails.
- * @note EINTR resumes the same write operation.
+ * @note EINTR resumes the same write operation. Linux uses per-send
+ * `MSG_NOSIGNAL`; Darwin uses the descriptor-level `SO_NOSIGPIPE` configured
+ * by the client/accept transport lifecycle and exercises this no-flag path.
  */
 Status write_exact(int descriptor, const void* source, std::size_t size) {
   const auto* bytes = static_cast<const std::uint8_t*>(source);
   std::size_t offset = 0U;
   while (offset < size) {
-#if defined(MSG_NOSIGNAL)
+#if defined(MSG_NOSIGNAL) && !defined(__APPLE__)
     const ssize_t count =
         ::send(descriptor, bytes + offset, size - offset, MSG_NOSIGNAL);
 #else

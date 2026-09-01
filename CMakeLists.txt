@@ -166,11 +166,16 @@ if(BUILD_TESTING)
     photospider_daemon_test_runtime
     PUBLIC PHOTOSPIDER_DAEMON_TEST_RUNTIME
     PRIVATE PHOTOSPIDER_DAEMON_VERSION="${PROJECT_VERSION}")
-
   add_executable(test_ipc_codec tests/unit/test_ipc_codec.cpp)
   target_compile_features(test_ipc_codec PRIVATE cxx_std_17)
   target_include_directories(test_ipc_codec PRIVATE src/lib tests)
   target_link_libraries(test_ipc_codec PRIVATE photospider_daemon_client)
+
+  add_executable(test_sigpipe_transport tests/unit/test_sigpipe_transport.cpp)
+  target_compile_features(test_sigpipe_transport PRIVATE cxx_std_17)
+  target_include_directories(test_sigpipe_transport PRIVATE src/lib tests)
+  target_link_libraries(test_sigpipe_transport
+                        PRIVATE photospider_daemon_test_runtime)
 
   add_executable(test_local_daemon tests/integration/test_local_daemon.cpp)
   target_compile_features(test_local_daemon PRIVATE cxx_std_17)
@@ -190,6 +195,8 @@ if(BUILD_TESTING)
       photospider_daemon_test_runtime
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(test_ipc_codec
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(test_sigpipe_transport
                            PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(test_local_daemon
                            PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -211,6 +218,7 @@ if(BUILD_TESTING)
   endif()
 
   add_test(NAME test_ipc_codec COMMAND test_ipc_codec)
+  add_test(NAME test_sigpipe_transport COMMAND test_sigpipe_transport)
   add_test(NAME test_local_daemon COMMAND test_local_daemon)
   add_test(NAME test_exception_fences COMMAND test_exception_fences)
   add_test(NAME test_exception_fences_handler_bad_alloc
