@@ -70,8 +70,10 @@ target_link_libraries(app PRIVATE PhotospiderDaemon::client)
 ```
 
 Package 只 export typed client target。它也把 `photospiderd` runtime 安装到 `bin/`，
-但不 export executable/server CMake target。Codec、router、registry、transport 与
-server implementation 保持 private。
+但不 export executable/server CMake target。即使 producer 使用
+`BUILD_SHARED_LIBS=ON` 配置，client target 也有意保持 static library；package 不承诺
+shared client ABI。Codec、router、registry、transport 与 server implementation 保持
+private。
 
 ## Correctness 边界
 

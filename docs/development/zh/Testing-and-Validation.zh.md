@@ -25,7 +25,8 @@ sibling source target 或 private kernel include path。
   exception fencing、shutdown join，以及带 descriptor/node cleanup 与 same-path rebind 的
   deterministic post-bind construction failure。
 - Installed-consumer test 证明 `bin/photospiderd` 已安装，同时 CMake export set 只含
-  `PhotospiderDaemon::client`。
+  `PhotospiderDaemon::client`。专用 `BUILD_SHARED_LIBS=ON` package gate 还证明该
+  target 保持为可用 static archive，且不创建 shared client ABI。
 
 ## Sanitizer
 

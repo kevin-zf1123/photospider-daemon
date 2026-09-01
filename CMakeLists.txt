@@ -28,6 +28,7 @@ find_package(Threads REQUIRED)
 
 add_library(
   photospider_daemon_client
+  STATIC
   src/lib/ipc/client.cpp
   src/lib/ipc/codec.cpp
   src/lib/ipc/frame.cpp

@@ -22,9 +22,10 @@ does not depend on the daemon.
 The daemon package exports only typed client headers and
 `PhotospiderDaemon::client`. It separately installs `bin/photospiderd` for
 runtime use; the executable is intentionally absent from
-`PhotospiderDaemonTargets.cmake`. Frame, codec, Unix socket, router,
-Session/Job registries, and server are private. No raw binary/protocol escape
-hatch or server SDK is exported.
+`PhotospiderDaemonTargets.cmake`. The client is always a static library,
+independent of `BUILD_SHARED_LIBS`; the package defines no shared client ABI.
+Frame, codec, Unix socket, router, Session/Job registries, and server are
+private. No raw binary/protocol escape hatch or server SDK is exported.
 
 The producer discovers the exact supported Photospider 0.x package through
 `find_package(Photospider 0.2 CONFIG REQUIRED COMPONENTS kernel)`. Package
