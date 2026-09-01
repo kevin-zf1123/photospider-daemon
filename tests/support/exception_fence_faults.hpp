@@ -1,0 +1,76 @@
+#pragma once
+
+#include <cstdint>
+
+namespace ps::ipc::test {
+
+/** @brief Deterministic exception-fence points in the test-only runtime. */
+enum class ExceptionFenceFaultPoint : std::uint32_t {
+  /** @brief Throws after one Service method has produced its response. */
+  DispatchPrimary = 0U,
+  /** @brief Throws before dispatch constructs its catch-path diagnostic. */
+  DispatchFailureStatus,
+  /** @brief Throws while an accepted descriptor enters registration. */
+  ConnectionRegistration,
+  /** @brief Throws after registration and before handler frame input. */
+  HandlerPrimary,
+  /** @brief Throws before a handler catch constructs its diagnostic. */
+  HandlerFailureStatus,
+  /** @brief Throws before a best-effort protocol failure is encoded. */
+  ProtocolFailureEncode,
+  /** @brief Throws after encoding and before a failure frame is written. */
+  ProtocolFailureWrite,
+  /** @brief One-past-the-end value used only to size fixed test state. */
+  Count,
+};
+
+/** @brief Exact exception category raised by one armed fault point. */
+enum class ExceptionFenceFaultAction : std::uint32_t {
+  /** @brief Observe the point without raising an exception. */
+  None = 0U,
+  /** @brief Raise `std::bad_alloc`. */
+  BadAlloc,
+  /** @brief Raise one allocation-free `std::exception` subtype. */
+  StandardException,
+  /** @brief Raise one type outside the `std::exception` hierarchy. */
+  UnknownException,
+};
+
+/**
+ * @brief Clears every armed one-shot fault and observation count.
+ * @throws Nothing.
+ * @note Call only while no exception-test handler is using the controller.
+ */
+void reset_exception_fence_faults() noexcept;
+
+/**
+ * @brief Arms one test-only point to raise exactly once.
+ * @param point Exact instrumented boundary.
+ * @param action Exception category; `None` leaves the point observational.
+ * @throws Nothing.
+ * @note Configuration is published before a handler thread is started.
+ */
+void arm_exception_fence_fault(ExceptionFenceFaultPoint point,
+                               ExceptionFenceFaultAction action) noexcept;
+
+/**
+ * @brief Records one boundary hit and raises an armed one-shot exception.
+ * @param point Exact instrumented boundary.
+ * @throws std::bad_alloc For `BadAlloc`.
+ * @throws std::exception subtype For `StandardException`.
+ * @throws A private nonstandard type for `UnknownException`.
+ * @note The point is disarmed before the exception is raised.
+ */
+void hit_exception_fence_fault(ExceptionFenceFaultPoint point);
+
+/**
+ * @brief Returns how often one instrumented boundary was reached.
+ * @param point Exact instrumented boundary.
+ * @return Monotonic hit count since the last reset.
+ * @throws Nothing.
+ * @note Observation is safe after the matching handler has completed.
+ */
+[[nodiscard]] std::uint32_t exception_fence_fault_hits(
+    ExceptionFenceFaultPoint point) noexcept;
+
+}  // namespace ps::ipc::test

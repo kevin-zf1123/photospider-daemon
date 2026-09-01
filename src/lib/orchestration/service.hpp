@@ -85,6 +85,9 @@ class Service final {
    * @param request Complete version-three request.
    * @return Correlated response with typed failure or method payload.
    * @throws Nothing; allocation and kernel exceptions are fenced into status.
+   * @note If diagnostic construction also fails, the response retains its
+   * correlation, carries a non-Ok empty-message status, and contains no
+   * success-only payload.
    */
   [[nodiscard]] Response dispatch(const Request& request) noexcept;
 
