@@ -18,7 +18,7 @@
 #include "photospider/execution/execution.hpp"
 #include "photospider/plugin/operation_registry.hpp"
 
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
 #include "support/exception_fence_faults.hpp"
 #endif
 
@@ -870,14 +870,14 @@ Response Service::dispatch(const Request& request) noexcept {
         response.shutdown_after_write = true;
         break;
     }
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
     test::hit_exception_fence_fault(
         test::ExceptionFenceFaultPoint::DispatchPrimary);
 #endif
   } catch (const std::bad_alloc&) {
     fail_response_without_allocation(response, ErrorCode::ResourceExhausted);
     try {
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
       test::hit_exception_fence_fault(
           test::ExceptionFenceFaultPoint::DispatchFailureStatus);
 #endif
@@ -890,7 +890,7 @@ Response Service::dispatch(const Request& request) noexcept {
   } catch (const std::exception& error) {
     fail_response_without_allocation(response, ErrorCode::Internal);
     try {
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
       test::hit_exception_fence_fault(
           test::ExceptionFenceFaultPoint::DispatchFailureStatus);
 #endif
@@ -901,7 +901,7 @@ Response Service::dispatch(const Request& request) noexcept {
   } catch (...) {
     fail_response_without_allocation(response, ErrorCode::Internal);
     try {
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
       test::hit_exception_fence_fault(
           test::ExceptionFenceFaultPoint::DispatchFailureStatus);
 #endif

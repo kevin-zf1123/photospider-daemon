@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
 #include <functional>
+#endif
 #include <memory>
 #include <string>
 
@@ -10,6 +12,7 @@
 
 namespace ps::ipc::internal {
 
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
 /**
  * @brief Deterministic private construction stages exposed to lifecycle tests.
  *
@@ -22,6 +25,7 @@ enum class ServerConstructionStage : std::uint32_t {
   /** @brief Service exists but handler storage/listener transfer is pending. */
   BeforeHandlerStorage = 2U,
 };
+#endif
 
 /**
  * @brief Fixed local server transport and orchestration configuration.
@@ -37,6 +41,7 @@ struct ServerConfig final {
   int listen_backlog = 32;
   /** @brief Positive global active connection/handler bound. */
   std::uint32_t maximum_active_connections = 64U;
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
   /**
    * @brief Optional private handler-entry observer/fault-injection callback.
    *
@@ -54,6 +59,7 @@ struct ServerConfig final {
    * Production callers normally leave it empty.
    */
   std::function<void(ServerConstructionStage)> construction_hook;
+#endif
 };
 
 /**
@@ -71,7 +77,8 @@ class Server final {
    * @throws std::runtime_error If the local listener cannot be created.
    * @throws std::bad_alloc If service or transport state allocation fails.
    * @throws std::system_error If bounded worker creation fails.
-   * @throws Any other exception raised by the private construction test hook.
+   * @throws Any other exception raised by a noninstalled test-runtime
+   * construction hook when that private variant is enabled.
    * @note Any failure after bind removes the socket node before propagating.
    */
   explicit Server(ServerConfig config);
@@ -127,6 +134,7 @@ class Server final {
    */
   [[nodiscard]] const std::string& socket_path() const noexcept;
 
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
   /**
    * @brief Returns the current active connection-handler count.
    * @return Exact atomic count at the observation instant.
@@ -144,7 +152,6 @@ class Server final {
    */
   [[nodiscard]] std::size_t retained_handler_count() const noexcept;
 
-#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
   /**
    * @brief Returns the private active-descriptor registry size for tests.
    * @return Exact registered descriptor count, or maximum size on lock

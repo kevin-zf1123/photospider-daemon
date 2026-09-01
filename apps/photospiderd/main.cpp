@@ -142,10 +142,7 @@ int main(int argc, char** argv) {
         ps::ipc::internal::ServiceConfig{
             options.maximum_concurrency, options.maximum_jobs,
             options.maximum_sessions, options.gpu_enabled},
-        32,
-        options.maximum_connections,
-        {},
-        {}});
+        32, options.maximum_connections});
     const ps::Status status = server.run();
     if (!status.ok()) {
       std::cerr << status.message << '\n';

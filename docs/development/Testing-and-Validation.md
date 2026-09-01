@@ -33,6 +33,24 @@ never a sibling source target or private kernel include path.
   `BUILD_SHARED_LIBS=ON` package gate also proves that this target remains a
   usable static archive and creates no shared client ABI.
 
+## Product and test runtime separation
+
+The installed `PhotospiderDaemon::client` and normal `photospiderd` executable
+always use test-control-free production objects. With `BUILD_TESTING=ON`,
+`photospider_daemon_test_runtime` independently compiles the complete runtime
+source list under `PHOTOSPIDER_DAEMON_TEST_RUNTIME` and adds the fixed exception
+controller. `test_local_daemon` and `test_exception_fences` link only that
+noninstalled static variant; normal binaries and package consumers link only
+the production target. No executable links both variants.
+
+After changing a private lifecycle seam, manually inspect the production
+archive from both testing-on and testing-off builds with `ar -t`, demangled
+`nm`, and `strings`. The product must contain no test controller, construction
+stage, fault callback, handler-entry callback, lifecycle count observer, test
+macro, or test-support object. The noninstalled test archive is the positive
+control and must retain the expected seams. This source/package audit remains
+manual and is not a CTest entry.
+
 ## Sanitizers
 
 ASAN and TSAN are separate scoped CMake modes and cannot be enabled together.
