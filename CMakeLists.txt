@@ -188,7 +188,7 @@ if(BUILD_TESTING)
   target_compile_features(test_socket_ownership PRIVATE cxx_std_17)
   target_include_directories(test_socket_ownership PRIVATE src/lib tests)
   target_link_libraries(test_socket_ownership
-                        PRIVATE photospider_daemon_client)
+                        PRIVATE photospider_daemon_test_runtime)
 
   add_executable(test_photospiderd_signals
                  tests/integration/test_photospiderd_signals.cpp)
@@ -241,9 +241,18 @@ if(BUILD_TESTING)
 
   add_test(NAME test_ipc_codec COMMAND test_ipc_codec)
   add_test(NAME test_sigpipe_transport COMMAND test_sigpipe_transport)
+  set_tests_properties(test_sigpipe_transport PROPERTIES TIMEOUT 10)
   add_test(NAME test_local_daemon COMMAND test_local_daemon)
   set_tests_properties(test_local_daemon PROPERTIES TIMEOUT 120)
   add_test(NAME test_socket_ownership COMMAND test_socket_ownership)
+  add_test(NAME test_socket_prearm_allocation
+           COMMAND test_socket_ownership prearm-allocation)
+  add_test(NAME test_socket_replacement_mode
+           COMMAND test_socket_ownership replacement-mode)
+  set_tests_properties(
+    test_socket_prearm_allocation
+    test_socket_replacement_mode
+    PROPERTIES TIMEOUT 10)
   add_test(NAME test_photospiderd_sigint COMMAND test_photospiderd_signals sigint)
   add_test(NAME test_photospiderd_sigterm_delayed
            COMMAND test_photospiderd_signals sigterm-delayed)

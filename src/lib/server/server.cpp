@@ -391,7 +391,7 @@ struct Server::Impl final {
 };
 
 /**
- * @brief Implements construction and restricted local listener binding.
+ * @brief Implements construction and generation-owned local listener binding.
  * @copydetails Server::Server
  */
 Server::Server(ServerConfig config) {

@@ -7,7 +7,7 @@ governed by [ADR 0001](docs/adr/0001-breaking-product-boundary-scope-reset.md).
 ## Product boundary
 
 - `PhotospiderDaemon::client` is the installed typed local-IPC client.
-- `photospiderd` owns a protected local socket, ephemeral Session/Job
+- `photospiderd` owns a peer-checked local socket, ephemeral Session/Job
   registries, bounded Sessions/Jobs/active handlers, runtime handler reaping,
   cancellation, temporary results, and shutdown.
 - The daemon depends only on an isolated installed public Photospider package.
@@ -84,9 +84,11 @@ remain private.
 The daemon validates bounded binary frames, exact integer ranges, UTF-8,
 request correlation, instance-scoped opaque ids, Job transitions, public kernel
 result type/shape/Region/layout, cancellation publication,
-descriptor/thread cleanup, and socket lifecycle. Unix peer-uid and mode-0600
-checks establish the documented same-user local boundary; they do not create a
-tenant or remote-service product.
+descriptor/thread cleanup, and socket lifecycle. Unix peer credentials enforce
+same-user connection acceptance. Socket-node mode is not an authentication
+boundary: callers choose a suitably private parent directory, while the daemon
+uses pathname generation only for fail-closed cleanup. These properties do not
+create a tenant or remote-service product.
 
 Malformed or oversized frames receive one typed protocol-error response and
 then the connection closes. A recoverable valid v3 header keeps its request id

@@ -2,6 +2,7 @@
 
 #include <sys/types.h>
 
+#include <cstdint>
 #include <string>
 
 #include "photospider/core/status.hpp"
@@ -110,10 +111,13 @@ struct SocketNodeIdentity final {
 };
 
 /**
- * @brief Move-only conditional cleanup ownership for one bound socket node.
+ * @brief Move-only state machine for one conditional socket-node cleanup.
  *
- * @note Cleanup uses a fixed parent-directory descriptor and removes only the
- * currently observed socket entry whose device/inode still match this guard.
+ * @note The lifecycle is `Empty -> Prepared -> Armed -> Consumed`. `Prepared`
+ * owns every allocation-backed path component before bind but has no socket
+ * generation and never unlinks. `Armed` follows a successful generation
+ * capture and removes only an exact device/inode match through the fixed parent
+ * descriptor. Moves transfer the current state and leave the source `Empty`.
  */
 class SocketNodeGuard final {
  public:
@@ -125,19 +129,19 @@ class SocketNodeGuard final {
   SocketNodeGuard() noexcept = default;
 
   /**
-   * @brief Takes one verified bound-generation cleanup capability.
+   * @brief Prepares allocation-backed cleanup state before listener bind.
    * @param parent_directory Fixed descriptor for the bound entry's parent.
    * @param parent_path Path used to revalidate the parent directory identity.
    * @param leaf_name Single socket filename relative to `parent_directory`.
    * @param parent_identity Device/inode of the fixed parent directory.
-   * @param node_identity Device/inode captured after successful bind.
-   * @throws Nothing after caller-owned string argument construction.
-   * @note All ownership transfers to this guard. The guard is active only when
-   * both identities and the descriptor are nonempty.
+   * @throws Nothing.
+   * @note The caller must transfer already-allocated strings with rvalue
+   * references. Valid ownership enters `Prepared`, which preserves every path
+   * until `arm()` receives a successfully captured socket generation.
    */
-  SocketNodeGuard(UniqueDescriptor parent_directory, std::string parent_path,
-                  std::string leaf_name, SocketNodeIdentity parent_identity,
-                  SocketNodeIdentity node_identity) noexcept;
+  SocketNodeGuard(UniqueDescriptor parent_directory, std::string&& parent_path,
+                  std::string&& leaf_name,
+                  SocketNodeIdentity parent_identity) noexcept;
 
   /**
    * @brief Conditionally removes the still-matching socket node.
@@ -175,6 +179,54 @@ class SocketNodeGuard final {
   SocketNodeGuard& operator=(SocketNodeGuard&& other) noexcept;
 
   /**
+   * @brief Returns the fixed parent descriptor without transferring it.
+   * @return Nonnegative owned descriptor while prepared or armed, else -1.
+   * @throws Nothing.
+   * @note The borrowed descriptor remains owned by this guard.
+   */
+  [[nodiscard]] int parent_descriptor() const noexcept {
+    return parent_directory_.get();
+  }
+
+  /**
+   * @brief Returns the prepared parent pathname.
+   * @return Immutable borrowed allocation-backed parent path.
+   * @throws Nothing.
+   * @note The reference remains valid until this guard is moved or destroyed.
+   */
+  [[nodiscard]] const std::string& parent_path() const noexcept {
+    return parent_path_;
+  }
+
+  /**
+   * @brief Returns the prepared socket leaf name.
+   * @return Immutable borrowed allocation-backed leaf component.
+   * @throws Nothing.
+   * @note The reference remains valid until this guard is moved or destroyed.
+   */
+  [[nodiscard]] const std::string& leaf_name() const noexcept {
+    return leaf_name_;
+  }
+
+  /**
+   * @brief Arms cleanup with one successfully captured socket generation.
+   * @param node_identity Device/inode observed after successful bind.
+   * @throws Nothing.
+   * @note Only `Prepared` transitions to `Armed`; every other state is
+   * unchanged. No allocation or pathname operation occurs.
+   */
+  void arm(SocketNodeIdentity node_identity) noexcept;
+
+  /**
+   * @brief Abandons an unverified bind without unlinking its pathname.
+   * @throws Nothing.
+   * @note Only `Prepared` transitions to `Consumed`. This fail-closed rollback
+   * closes descriptor ownership later but preserves a path whose generation
+   * could not be captured, so a replacement is never guessed to be ours.
+   */
+  void abandon_unverified_bind() noexcept;
+
+  /**
    * @brief Attempts identity-matched socket-node removal exactly once.
    * @throws Nothing.
    * @note Portable POSIX keeps final `fstatat` and `unlinkat` as separate
@@ -185,6 +237,18 @@ class SocketNodeGuard final {
   void remove() noexcept;
 
  private:
+  /** @brief Exact allocation/identity/cleanup state of this guard. */
+  enum class State : std::uint8_t {
+    /** @brief No parent or pathname ownership is actionable. */
+    Empty = 0U,
+    /** @brief Pre-bind path state exists but cannot authorize unlink. */
+    Prepared = 1U,
+    /** @brief One captured socket generation authorizes checked cleanup. */
+    Armed = 2U,
+    /** @brief Cleanup or fail-closed abandonment has been consumed. */
+    Consumed = 3U,
+  };
+
   /** @brief Fixed parent-directory descriptor capability. */
   UniqueDescriptor parent_directory_;
   /** @brief Parent pathname used only for identity revalidation. */
@@ -195,8 +259,8 @@ class SocketNodeGuard final {
   SocketNodeIdentity parent_identity_;
   /** @brief Captured bound socket device/inode generation. */
   SocketNodeIdentity node_identity_;
-  /** @brief True until the one cleanup attempt is consumed. */
-  bool active_ = false;
+  /** @brief Current state in the documented one-way cleanup lifecycle. */
+  State state_ = State::Empty;
 };
 
 /**
@@ -225,15 +289,18 @@ struct BoundUnixListener final {
     const std::string& path);
 
 /**
- * @brief Creates a same-user listener with filesystem mode 0600.
+ * @brief Creates one local listener with generation-checked pathname cleanup.
  * @param path Exact local socket path.
  * @param backlog Positive pending-connection bound.
  * @return Bound descriptor plus exact socket-node generation guard, or typed
  * failure.
- * @throws std::bad_alloc If path or diagnostic allocation fails.
+ * @throws std::bad_alloc If pre-bind path or later diagnostic allocation fails.
  * @note Every existing filesystem entry, including a stale/live socket, is
  * rejected without removal. When absent, concurrent binds are arbitrated by
- * the operating system; no stale-node recovery is attempted.
+ * the operating system; no stale-node recovery is attempted. Socket-node mode
+ * follows the caller's directory and process umask and is not an authentication
+ * boundary. Callers select a suitably private parent directory; accepted peers
+ * are separately checked by `accept_same_user()`.
  */
 [[nodiscard]] Result<BoundUnixListener> create_unix_listener(
     const std::string& path, int backlog);
@@ -258,6 +325,49 @@ struct BoundUnixListener final {
 void shutdown_descriptor(int descriptor) noexcept;
 
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/**
+ * @brief Callback type for one noninstalled post-arm pathname replacement.
+ * @param path Exact listener pathname whose original generation is armed.
+ * @param context Opaque caller-owned test state.
+ * @throws Any exception raised by the callback; armed cleanup remains active.
+ * @note The callback type exists only in the noninstalled test runtime.
+ */
+using ArmedSocketNodeHookForTest = void (*)(const std::string& path,
+                                            void* context);
+
+/**
+ * @brief Injects allocation failure at listener guard-state preparation.
+ * @param path Exact local socket path.
+ * @param backlog Positive pending-connection bound.
+ * @return A normal listener result only when validation fails before the
+ * injection point.
+ * @throws std::bad_alloc At the exact guard preparation boundary.
+ * @note This seam is compiled only into the noninstalled test runtime. It
+ * models allocation failure immediately before the inactive socket-node guard
+ * state is prepared and must never enter an installed product object.
+ */
+[[nodiscard]] Result<BoundUnixListener>
+create_unix_listener_with_prearm_allocation_failure_for_test(
+    const std::string& path, int backlog);
+
+/**
+ * @brief Runs one callback after socket-generation ownership is armed.
+ * @param path Exact local socket path.
+ * @param backlog Positive pending-connection bound.
+ * @param hook Non-null callback invoked after generation capture and guard arm.
+ * @param context Opaque caller-owned callback state.
+ * @return Bound listener ownership or typed setup failure.
+ * @throws std::bad_alloc If path or diagnostic allocation fails.
+ * @throws Any exception raised by `hook`; armed cleanup remains active.
+ * @note This noninstalled seam lets tests replace the pathname exactly before
+ * subsequent listener setup, without changing production object code.
+ */
+[[nodiscard]] Result<BoundUnixListener>
+create_unix_listener_with_armed_hook_for_test(const std::string& path,
+                                              int backlog,
+                                              ArmedSocketNodeHookForTest hook,
+                                              void* context);
+
 /**
  * @brief Applies production connected-stream SIGPIPE preparation in tests.
  * @param descriptor Descriptor whose ownership transfers to this function.
