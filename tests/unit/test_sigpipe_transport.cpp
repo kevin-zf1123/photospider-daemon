@@ -116,6 +116,50 @@ bool parse_descriptor(const char* text, int* descriptor) noexcept {
 }
 
 /**
+ * @brief Reports whether one live descriptor has close-on-exec enabled.
+ * @param descriptor Product descriptor to inspect.
+ * @return True only when `F_GETFD` includes `FD_CLOEXEC`.
+ * @throws Nothing.
+ */
+bool descriptor_is_cloexec(int descriptor) noexcept {
+  const int flags = ::fcntl(descriptor, F_GETFD);
+  return flags >= 0 && (flags & FD_CLOEXEC) != 0;
+}
+
+/**
+ * @brief Creates one explicitly inheritable test-owned listener duplicate.
+ * @param descriptor Product listener descriptor to duplicate.
+ * @return Owned duplicate with `FD_CLOEXEC` cleared, or empty on failure.
+ * @throws Nothing.
+ * @note The product listener flags are never modified; only this duplicate is
+ * inherited by the SIGPIPE self-exec child that must accept a test peer.
+ */
+ps::ipc::internal::UniqueDescriptor make_inheritable_duplicate(
+    int descriptor) noexcept {
+  ps::ipc::internal::UniqueDescriptor duplicate(::dup(descriptor));
+  if (!duplicate.valid()) {
+    return {};
+  }
+  const int flags = ::fcntl(duplicate.get(), F_GETFD);
+  if (flags < 0 ||
+      ::fcntl(duplicate.get(), F_SETFD, flags & ~FD_CLOEXEC) != 0) {
+    return {};
+  }
+  return duplicate;
+}
+
+/**
+ * @brief Confirms a descriptor number is closed after self-exec.
+ * @param descriptor Pre-exec product descriptor number.
+ * @return True only for `F_GETFD` failure with `EBADF`.
+ * @throws Nothing.
+ */
+bool descriptor_is_closed_after_exec(int descriptor) noexcept {
+  errno = 0;
+  return ::fcntl(descriptor, F_GETFD) == -1 && errno == EBADF;
+}
+
+/**
  * @brief Opens the selected product-prepared stream inside the child.
  * @param role Client-connect or server-accept lifecycle role.
  * @param path Exact listener pathname.
@@ -279,8 +323,13 @@ bool supervised_peer_close_write(const std::string& executable,
   }
   UniqueDescriptor parent_control(controls[0]);
   UniqueDescriptor child_control(controls[1]);
+  UniqueDescriptor inherited_listener =
+      make_inheritable_duplicate(listener.descriptor.get());
+  if (!inherited_listener.valid()) {
+    return false;
+  }
   const std::string listener_argument =
-      std::to_string(listener.descriptor.get());
+      std::to_string(inherited_listener.get());
   const std::string child_control_argument =
       std::to_string(child_control.get());
   const std::string parent_control_argument =
@@ -305,6 +354,7 @@ bool supervised_peer_close_write(const std::string& executable,
     ::_exit(127);
   }
   ChildProcess child(process);
+  inherited_listener.reset();
   child_control.reset();
 
   auto peer_result = role == ChildStreamRole::ConnectedClient
@@ -321,6 +371,70 @@ bool supervised_peer_close_write(const std::string& executable,
   if (!write_control_byte(parent_control.get(), 'G')) {
     return false;
   }
+  return child.wait_for_normal_exit();
+}
+
+/**
+ * @brief Verifies all product-owned socket descriptors are close-on-exec.
+ * @param executable Exact current test executable path.
+ * @return True when four live flags are set and none survive fork plus exec.
+ * @throws std::bad_alloc If fixture or argument allocation fails.
+ * @throws std::system_error If process setup fails.
+ * @note The four roles are listener, fixed parent directory, connected client,
+ * and accepted server stream. The child only observes inherited numbers.
+ */
+bool cloexec_descriptor_regression(const std::string& executable) {
+  using ps::ipc::internal::accept_same_user;
+  using ps::ipc::internal::BoundUnixListener;
+  using ps::ipc::internal::connect_unix_socket;
+  using ps::ipc::internal::create_unix_listener;
+  using ps::ipc::internal::UniqueDescriptor;
+
+  const std::string path = socket_path();
+  auto listener_result = create_unix_listener(path, 4);
+  if (!listener_result.ok()) {
+    return false;
+  }
+  BoundUnixListener listener = listener_result.take_value();
+  auto client_result = connect_unix_socket(path);
+  if (!client_result.ok()) {
+    return false;
+  }
+  auto accepted_result = accept_same_user(listener.descriptor.get());
+  if (!accepted_result.ok()) {
+    return false;
+  }
+  UniqueDescriptor client = client_result.take_value();
+  UniqueDescriptor accepted = accepted_result.take_value();
+  const int descriptors[] = {listener.descriptor.get(),
+                             listener.socket_node.parent_descriptor(),
+                             client.get(), accepted.get()};
+  for (int descriptor : descriptors) {
+    if (!descriptor_is_cloexec(descriptor)) {
+      return false;
+    }
+  }
+
+  const std::string listener_argument = std::to_string(descriptors[0]);
+  const std::string parent_argument = std::to_string(descriptors[1]);
+  const std::string client_argument = std::to_string(descriptors[2]);
+  const std::string accepted_argument = std::to_string(descriptors[3]);
+  char* child_arguments[] = {const_cast<char*>(executable.c_str()),
+                             const_cast<char*>("--child-cloexec"),
+                             const_cast<char*>(listener_argument.c_str()),
+                             const_cast<char*>(parent_argument.c_str()),
+                             const_cast<char*>(client_argument.c_str()),
+                             const_cast<char*>(accepted_argument.c_str()),
+                             nullptr};
+  const pid_t process = ::fork();
+  if (process < 0) {
+    return false;
+  }
+  if (process == 0) {
+    ::execv(executable.c_str(), child_arguments);
+    ::_exit(127);
+  }
+  ChildProcess child(process);
   return child.wait_for_normal_exit();
 }
 
@@ -360,6 +474,16 @@ bool sigpipe_configuration_failure_regression() {
  * @note Behavioral failures return nonzero through `PS_IPC_CHECK`.
  */
 int main(int argc, char* argv[]) {
+  if (argc == 6 && std::string_view(argv[1]) == "--child-cloexec") {
+    for (int index = 2; index < argc; ++index) {
+      int descriptor = -1;
+      if (!parse_descriptor(argv[index], &descriptor) ||
+          !descriptor_is_closed_after_exec(descriptor)) {
+        return 30 + index;
+      }
+    }
+    return 0;
+  }
   if (argc == 6 && (std::string_view(argv[1]) == "--child-client" ||
                     std::string_view(argv[1]) == "--child-accepted")) {
     int listener_descriptor = -1;
@@ -385,5 +509,6 @@ int main(int argc, char* argv[]) {
   PS_IPC_CHECK(
       supervised_peer_close_write(executable, ChildStreamRole::AcceptedServer));
   PS_IPC_CHECK(sigpipe_configuration_failure_regression());
+  PS_IPC_CHECK(cloexec_descriptor_regression(executable));
   return 0;
 }

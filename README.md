@@ -93,7 +93,9 @@ create a tenant or remote-service product.
 Malformed or oversized frames receive one typed protocol-error response and
 then the connection closes. A recoverable valid v3 header keeps its request id
 and method; otherwise the documented correlation sentinel is request id zero
-with method `daemon.info`. See
+with method `daemon.info`. Unix client/listener/accepted and fixed-parent
+descriptors are close-on-exec; embedded-NUL path bytes are rejected before any
+prefix can be used. See
 [Testing and Validation](docs/development/Testing-and-Validation.md) for
 sanitizer and manual fuzz commands.
 

@@ -44,6 +44,13 @@ oversized、truncated 或 trailing bytes 会使完整 message 被拒绝。Server
 Reader 最多保留固定十一字节 request header 用于 correlation，并只随实际到达的 byte
 增长完整 payload storage。
 
+Client、listener、accepted stream 与固定 parent-directory descriptor 都设置
+close-on-exec。Linux 使用 `SOCK_CLOEXEC` 创建 socket，并使用
+`accept4(..., SOCK_CLOEXEC)` accept。若这些 atomic facility 明确不受支持，则使用经过
+检查的 `F_GETFD`/`F_SETFD(FD_CLOEXEC)` fallback；任何失败都会关闭 descriptor 并返回
+typed failure。Darwin 使用该 fallback，因此 concurrent fork 可能观察到有限的
+create/accept-to-fcntl window；实现不声称该平台具有 atomic close-on-exec。
+
 Payload 内 integer 使用 little-endian。Text/byte vector 使用 little-endian uint32
 byte count，随后是精确 bytes。Text 必须是 canonical UTF-8，并遵守 field-specific
 limit。Boolean 只能是 zero/one。Floating parameter 保留精确 IEEE-754 binary64 bits。
@@ -181,6 +188,10 @@ Startup 只接受不存在的 socket pathname。Live socket、stale socket、reg
 symlink 或任何其他已有 directory entry 都会产生 typed startup failure，并保持原样。
 Daemon 不执行 stale-node probe、automatic unlink、crash recovery 或 lock-file recovery。
 若并发 attempt 都观察到 path 不存在，则依靠 Unix 原子 `bind` result 选出唯一 owner。
+
+Empty、over-bound 或包含 embedded NUL 的 pathname 返回 `InvalidArgument`。Validation
+会在 split、parent open、socket creation、bind 或 connect 前检查完整 `std::string`，
+因此 POSIX NUL termination 不能把操作重定向到较短 prefix。
 
 Bind 前，listener 把所有 allocation-backed parent path、leaf 与 fixed-directory
 capability 移入 inactive guard。Bind 后至 arm 前，只执行不分配的 system observation，

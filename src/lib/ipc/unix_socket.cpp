@@ -33,9 +33,9 @@ struct SocketPathParts final {
  */
 Result<sockaddr_un> socket_address(const std::string& path) {
   sockaddr_un address{};
-  if (path.empty() || path.size() >= sizeof(address.sun_path)) {
-    return Result<sockaddr_un>(Status::failure(
-        ErrorCode::InvalidArgument, "Unix-domain socket path is invalid"));
+  const Status path_status = validate_unix_socket_path(path);
+  if (!path_status.ok()) {
+    return Result<sockaddr_un>(path_status);
   }
   address.sun_family = AF_UNIX;
   std::memcpy(address.sun_path, path.c_str(), path.size() + 1U);
@@ -78,6 +78,98 @@ Result<SocketPathParts> split_socket_path(const std::string& path) {
 Status errno_status(const std::string& action) {
   return Status::failure(ErrorCode::Internal,
                          action + ": " + std::strerror(errno));
+}
+
+/**
+ * @brief Applies `FD_CLOEXEC` with checked descriptor-flag syscalls.
+ * @param descriptor Newly created or accepted descriptor.
+ * @return Success or typed failure preserving the immediately observed errno.
+ * @throws std::bad_alloc If a failure diagnostic allocation fails.
+ * @note This fallback has an unavoidable creation-to-flag fork window. Every
+ * failure leaves closure to the caller's active `UniqueDescriptor` owner.
+ */
+Status set_close_on_exec(int descriptor) {
+  int flags = -1;
+  do {
+    flags = ::fcntl(descriptor, F_GETFD);
+  } while (flags < 0 && errno == EINTR);
+  if (flags < 0) {
+    return errno_status("could not read local socket descriptor flags");
+  }
+  int result = -1;
+  do {
+    result = ::fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC);
+  } while (result < 0 && errno == EINTR);
+  return result == 0 ? Status::success()
+                     : errno_status("could not set local socket close-on-exec");
+}
+
+/**
+ * @brief Creates one Unix stream socket with close-on-exec ownership.
+ * @param action Stable diagnostic for socket-creation failure.
+ * @return Owned close-on-exec descriptor or typed failure.
+ * @throws std::bad_alloc If a failure diagnostic allocation fails.
+ * @note Non-Apple platforms with `SOCK_CLOEXEC` request atomic creation and
+ * fall back only when the flag is explicitly unsupported. Other platforms use
+ * checked `fcntl` and retain the documented concurrent-fork window.
+ */
+Result<UniqueDescriptor> create_stream_socket(const char* action) {
+  int descriptor = -1;
+#if defined(SOCK_CLOEXEC) && !defined(__APPLE__)
+  do {
+    descriptor = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  } while (descriptor < 0 && errno == EINTR);
+  if (descriptor >= 0) {
+    return Result<UniqueDescriptor>(UniqueDescriptor(descriptor));
+  }
+  if (errno != EINVAL && errno != EPROTONOSUPPORT) {
+    return Result<UniqueDescriptor>(errno_status(action));
+  }
+#endif
+  do {
+    descriptor = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  } while (descriptor < 0 && errno == EINTR);
+  UniqueDescriptor owned(descriptor);
+  if (!owned.valid()) {
+    return Result<UniqueDescriptor>(errno_status(action));
+  }
+  const Status close_on_exec = set_close_on_exec(owned.get());
+  return close_on_exec.ok() ? Result<UniqueDescriptor>(std::move(owned))
+                            : Result<UniqueDescriptor>(close_on_exec);
+}
+
+/**
+ * @brief Accepts one stream with close-on-exec ownership.
+ * @param listener Valid listening descriptor.
+ * @return Owned close-on-exec stream or typed accept/flag failure.
+ * @throws std::bad_alloc If a failure diagnostic allocation fails.
+ * @note Linux uses `accept4(SOCK_CLOEXEC)` and falls back only when
+ * unsupported. Other platforms use `accept` plus checked `fcntl` with a
+ * concurrent-fork window before the flag is applied.
+ */
+Result<UniqueDescriptor> accept_stream(int listener) {
+  int descriptor = -1;
+#if defined(__linux__) && defined(SOCK_CLOEXEC)
+  do {
+    descriptor = ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
+  } while (descriptor < 0 && errno == EINTR);
+  if (descriptor >= 0) {
+    return Result<UniqueDescriptor>(UniqueDescriptor(descriptor));
+  }
+  if (errno != ENOSYS && errno != EINVAL) {
+    return Result<UniqueDescriptor>(errno_status("local accept failed"));
+  }
+#endif
+  do {
+    descriptor = ::accept(listener, nullptr, nullptr);
+  } while (descriptor < 0 && errno == EINTR);
+  UniqueDescriptor owned(descriptor);
+  if (!owned.valid()) {
+    return Result<UniqueDescriptor>(errno_status("local accept failed"));
+  }
+  const Status close_on_exec = set_close_on_exec(owned.get());
+  return close_on_exec.ok() ? Result<UniqueDescriptor>(std::move(owned))
+                            : Result<UniqueDescriptor>(close_on_exec);
 }
 
 /**
@@ -182,6 +274,20 @@ Status verify_same_user(int descriptor) {
 }
 
 }  // namespace
+
+/**
+ * @brief Implements pre-syscall Unix socket pathname validation.
+ * @copydetails validate_unix_socket_path
+ */
+Status validate_unix_socket_path(const std::string& path) {
+  sockaddr_un address{};
+  if (path.empty() || path.size() >= sizeof(address.sun_path) ||
+      path.find('\0') != std::string::npos) {
+    return Status::failure(ErrorCode::InvalidArgument,
+                           "Unix-domain socket path is invalid");
+  }
+  return Status::success();
+}
 
 /**
  * @brief Implements exact descriptor teardown.
@@ -335,11 +441,11 @@ Result<UniqueDescriptor> connect_unix_socket(const std::string& path) {
   if (!address.ok()) {
     return Result<UniqueDescriptor>(address.status());
   }
-  UniqueDescriptor descriptor(::socket(AF_UNIX, SOCK_STREAM, 0));
-  if (!descriptor.valid()) {
-    return Result<UniqueDescriptor>(
-        errno_status("could not create local socket"));
+  auto created = create_stream_socket("could not create local socket");
+  if (!created.ok()) {
+    return Result<UniqueDescriptor>(created.status());
   }
+  UniqueDescriptor descriptor = created.take_value();
   auto prepared = prepare_stream(std::move(descriptor));
   if (!prepared.ok()) {
     return Result<UniqueDescriptor>(prepared.status());
@@ -433,10 +539,11 @@ Result<BoundUnixListener> create_unix_listener_impl(
                               std::move(path_parts.parent_path),
                               std::move(path_parts.leaf_name), parent_identity);
 
-  UniqueDescriptor descriptor(::socket(AF_UNIX, SOCK_STREAM, 0));
-  if (!descriptor.valid()) {
-    return Result<BoundUnixListener>(errno_status("could not create listener"));
+  auto created = create_stream_socket("could not create listener");
+  if (!created.ok()) {
+    return Result<BoundUnixListener>(created.status());
   }
+  UniqueDescriptor descriptor = created.take_value();
   if (::bind(descriptor.get(),
              reinterpret_cast<const sockaddr*>(&address.value()),
              sizeof(sockaddr_un)) != 0) {
@@ -491,20 +598,17 @@ Result<BoundUnixListener> create_unix_listener(const std::string& path,
  * @copydetails accept_same_user
  */
 Result<UniqueDescriptor> accept_same_user(int listener) {
-  int descriptor = -1;
-  do {
-    descriptor = ::accept(listener, nullptr, nullptr);
-  } while (descriptor < 0 && errno == EINTR);
-  if (descriptor < 0) {
-    return Result<UniqueDescriptor>(errno_status("local accept failed"));
+  auto accepted = accept_stream(listener);
+  if (!accepted.ok()) {
+    return Result<UniqueDescriptor>(accepted.status());
   }
-  UniqueDescriptor owned(descriptor);
+  UniqueDescriptor owned = accepted.take_value();
   auto prepared = prepare_stream(std::move(owned));
   if (!prepared.ok()) {
     return Result<UniqueDescriptor>(prepared.status());
   }
   owned = prepared.take_value();
-  Status status = verify_same_user(descriptor);
+  Status status = verify_same_user(owned.get());
   if (!status.ok()) {
     return Result<UniqueDescriptor>(std::move(status));
   }

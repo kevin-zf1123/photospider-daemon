@@ -31,6 +31,12 @@ never a sibling source target or private kernel include path.
   run guard that requests stop and joins on assertion return or exception.
   Handler-count assertions first wait for active zero and drive one explicit
   accept-loop reap rather than relying on elapsed time alone.
+- Transport tests check close-on-exec on the client, listener, accepted stream,
+  and fixed parent descriptor plus
+  fork/exec non-inheritance; only a test-owned duplicate is made inheritable
+  for the separate SIGPIPE self-exec scenario.
+- Pathname tests reject embedded-NUL suffix and post-NUL slash variants before
+  connect/listen effects and preserve every shorter prefix.
 - Real `photospiderd` subprocess tests send `SIGINT`, send `SIGTERM` after a
   five-second cooperative Job reaches Running, and invoke `daemon.shutdown`.
   They require bounded `exit(0)`, generation-checked socket removal, and

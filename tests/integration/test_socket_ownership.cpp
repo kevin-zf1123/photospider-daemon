@@ -378,6 +378,91 @@ bool replacement_target_mode_is_unchanged() {
   return unchanged;
 }
 
+/**
+ * @brief Proves embedded NUL path bytes fail before any pathname effect.
+ * @return True when client/listener/server reject suffix and slash variants,
+ * while every prefix remains disconnected, absent, or identity-preserved.
+ * @throws std::bad_alloc If fixture/path allocation fails.
+ * @note The cases distinguish `std::string` length from the prefix a POSIX
+ * syscall would otherwise observe through `c_str()`.
+ */
+bool embedded_nul_paths_are_rejected_without_effect() {
+  const std::string nul_suffix("\0suffix", 7U);
+  const std::string nul_slash("\0/child", 7U);
+
+  const std::string live_path = socket_path();
+  auto live_listener = internal::create_unix_listener(live_path, 4);
+  if (!live_listener.ok()) {
+    return false;
+  }
+  const NodeIdentity live_before = node_identity(live_path);
+  auto suffix_connection =
+      internal::connect_unix_socket(live_path + nul_suffix);
+  auto slash_connection = internal::connect_unix_socket(live_path + nul_slash);
+  const NodeIdentity live_after = node_identity(live_path);
+  const bool client_rejected =
+      !suffix_connection.ok() &&
+      suffix_connection.status().code == ps::ErrorCode::InvalidArgument &&
+      !slash_connection.ok() &&
+      slash_connection.status().code == ps::ErrorCode::InvalidArgument &&
+      same_identity(live_before, live_after);
+
+  const std::string absent_prefix = socket_path();
+  auto invalid_listener =
+      internal::create_unix_listener(absent_prefix + nul_suffix, 4);
+  const bool listener_created_nothing =
+      !invalid_listener.ok() &&
+      invalid_listener.status().code == ps::ErrorCode::InvalidArgument &&
+      path_absent(absent_prefix);
+
+  const std::string directory_prefix = socket_path() + ".dir";
+  if (::mkdir(directory_prefix.c_str(), S_IRWXU) != 0) {
+    return false;
+  }
+  const NodeIdentity directory_before = node_identity(directory_prefix);
+  auto invalid_slash_listener =
+      internal::create_unix_listener(directory_prefix + nul_slash, 4);
+  const NodeIdentity directory_after = node_identity(directory_prefix);
+  const bool slash_prefix_preserved =
+      !invalid_slash_listener.ok() &&
+      invalid_slash_listener.status().code == ps::ErrorCode::InvalidArgument &&
+      S_ISDIR(directory_after.mode) &&
+      same_identity(directory_before, directory_after);
+  static_cast<void>(::rmdir(directory_prefix.c_str()));
+
+  const std::string file_prefix = socket_path();
+  internal::UniqueDescriptor file(::open(
+      file_prefix.c_str(), O_CREAT | O_EXCL | O_WRONLY, S_IRUSR | S_IWUSR));
+  if (!file.valid()) {
+    return false;
+  }
+  file.reset();
+  const NodeIdentity file_before = node_identity(file_prefix);
+  auto invalid_existing_listener =
+      internal::create_unix_listener(file_prefix + nul_suffix, 4);
+  const NodeIdentity file_after = node_identity(file_prefix);
+  const bool existing_prefix_preserved =
+      !invalid_existing_listener.ok() &&
+      invalid_existing_listener.status().code ==
+          ps::ErrorCode::InvalidArgument &&
+      S_ISREG(file_after.mode) && same_identity(file_before, file_after);
+  static_cast<void>(::unlink(file_prefix.c_str()));
+
+  const std::string server_prefix = socket_path();
+  bool server_rejected_invalid_config = false;
+  try {
+    internal::Server unexpected(server_config(server_prefix + nul_suffix));
+  } catch (const std::invalid_argument&) {
+    server_rejected_invalid_config = true;
+  } catch (...) {
+  }
+  const bool server_created_nothing = path_absent(server_prefix);
+
+  return client_rejected && listener_created_nothing &&
+         slash_prefix_preserved && existing_prefix_preserved &&
+         server_rejected_invalid_config && server_created_nothing;
+}
+
 }  // namespace
 
 /**
@@ -413,5 +498,6 @@ int main(int argc, char* argv[]) {
   PS_IPC_CHECK(clean_restart_is_available());
   PS_IPC_CHECK(prearm_allocation_failure_is_clean());
   PS_IPC_CHECK(replacement_target_mode_is_unchanged());
+  PS_IPC_CHECK(embedded_nul_paths_are_rejected_without_effect());
   return 0;
 }
