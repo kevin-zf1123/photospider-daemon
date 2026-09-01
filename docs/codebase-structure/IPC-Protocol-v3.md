@@ -181,6 +181,26 @@ and closes without starting a thread. Accepted handler threads remain
 joinable; the accept loop reaps completed threads during normal operation and
 shutdown joins every remainder. No handler is detached.
 
+## Socket pathname lifecycle
+
+Startup accepts only an absent socket pathname. A live socket, stale socket,
+regular file, symlink, or any other existing directory entry produces a typed
+startup failure and remains unchanged. The daemon performs no stale-node probe,
+automatic unlink, crash recovery, or lock-file recovery. Concurrent attempts
+that both observe absence rely on the atomic Unix `bind` result to select one
+owner.
+
+After bind, the listener records the fixed parent directory and the exact
+parent/socket `st_dev` and `st_ino` values. Construction rollback, normal
+shutdown, signal shutdown, and destruction use the same move-only guard.
+Cleanup first revalidates the fixed parent descriptor, the parent pathname, the
+socket type, and both generations; mismatch, replacement, or an inconclusive
+system call preserves the current path. A normal matching cleanup removes the
+node and permits a clean restart. Portable POSIX has no conditional
+compare-and-unlink primitive: the final `fstatat` and `unlinkat` calls are
+separate, and the implementation does not claim protection from a hostile
+same-uid writer racing exactly between them.
+
 ## Correctness invariants
 
 - Frame, version, enum, UTF-8, count, length, overflow, and trailing-data
@@ -193,8 +213,9 @@ shutdown joins every remainder. No handler is detached.
   once.
 - Listener construction prepares allocation-backed path/configuration state
   before bind and retains descriptor/socket-node rollback guards until complete
-  private-state publication; every injected construction failure leaves the
-  exact path immediately rebindable.
+  private-state publication. It rejects every existing entry without recovery;
+  an identity-matched injected failure leaves the exact path immediately
+  rebindable, while a replacement generation is preserved.
 - Daemon production build and package consumer use only an isolated installed
   `Photospider::kernel` target.
 

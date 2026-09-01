@@ -166,6 +166,22 @@ Server 还强制执行一个正值、全局 active-connection/handler bound。Ex
 Accepted handler thread 保持 joinable；accept loop 在正常运行期 reap completed thread，
 shutdown join 每个剩余 thread。不存在 detached handler。
 
+## Socket pathname lifecycle
+
+Startup 只接受不存在的 socket pathname。Live socket、stale socket、regular file、
+symlink 或任何其他已有 directory entry 都会产生 typed startup failure，并保持原样。
+Daemon 不执行 stale-node probe、automatic unlink、crash recovery 或 lock-file recovery。
+若并发 attempt 都观察到 path 不存在，则依靠 Unix 原子 `bind` result 选出唯一 owner。
+
+Bind 后 listener 记录固定 parent directory 以及 parent/socket 的精确 `st_dev` 与
+`st_ino`。Construction rollback、normal shutdown、signal shutdown 与 destruction
+共享同一个 move-only guard。Cleanup 先重新验证固定 parent descriptor、parent
+pathname、socket type 与两组 generation；mismatch、replacement 或无法确认的 system
+call 都会保留当前 path。正常匹配的 cleanup 会移除 node 并允许 clean restart。
+Portable POSIX 没有 conditional compare-and-unlink primitive：最终 `fstatat` 与
+`unlinkat` 是两条独立 call，实现不声称能防御 hostile same-uid writer 恰好在两者之间
+发起的 race。
+
 ## Correctness invariant
 
 - state mutation 前完成 frame、version、enum、UTF-8、count、length、overflow 与
@@ -176,8 +192,9 @@ shutdown join 每个剩余 thread。不存在 detached handler。
 - Worker/callback exception 被 fenced 到一个 Job failure。
 - descriptor、worker、GraphContext、result 与 queue ownership 恰好 settle 一次。
 - Listener construction 在 bind 前准备 allocation-backed path/configuration state，并让
-  descriptor/socket-node rollback guard 持有到完整 private-state publication；每个 injected
-  construction failure 后 exact path 都可立即重新 bind。
+  descriptor/socket-node rollback guard 持有到完整 private-state publication。它拒绝
+  所有 existing entry 且不 recovery；identity-matched injected failure 后 exact path 可
+  立即重新 bind，而 replacement generation 会被保留。
 - daemon production build/package consumer 只使用 isolated installed
   `Photospider::kernel` target。
 

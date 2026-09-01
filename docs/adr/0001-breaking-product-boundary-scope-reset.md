@@ -93,6 +93,18 @@ port may implement the same frame/protocol contract over a local named-pipe
 abstraction. The product has no TCP, HTTP, gRPC, TLS, remote address, remote
 worker, v2 compatibility adapter, or dual protocol.
 
+Socket startup is deliberately recovery-free. Every existing pathname,
+including a live or stale socket, regular file, or symlink, is rejected without
+unlinking or replacement. When the path is absent, concurrent bind attempts are
+arbitrated atomically by the operating system. A successful bind captures the
+parent and socket `st_dev`/`st_ino` generations through a fixed parent
+directory descriptor. Cleanup unlinks only a currently matching socket and
+preserves every mismatch or inconclusive observation. Portable POSIX
+`fstatat` and `unlinkat` remain separate operations, so this is fail-closed
+generation hygiene rather than a claim of atomic compare-and-unlink against a
+hostile same-uid writer. Automatic stale-node reclamation is outside this
+ephemeral reset; an operator removes a crash residue explicitly.
+
 The wire carries `WorkflowDocument` input and public execution options/results.
 It never carries semantic IR, optimized IR, execution-plan internals, plugin
 paths, DSO handles, device handles, cache internals, or kernel object pointers.
@@ -141,8 +153,10 @@ claims:
 - negative, concurrency, restart-loss, Session-close, cancellation, result
   release, ASAN, TSAN, and fuzz testing where supported.
 
-Unix socket owner/mode checks are local lifecycle correctness and same-user
-path hygiene. They are not authentication or tenant isolation.
+Unix socket mode/generation checks are local lifecycle correctness and
+same-user path hygiene. Same-user status does not permit an old instance to
+remove a replacement inode; these checks are not authentication or tenant
+isolation.
 
 ## Exact non-goals
 

@@ -83,6 +83,15 @@ specification、artifact id、output commit、receipt、按 tenant quota 或 res
 named-pipe abstraction 上实现相同 frame/protocol contract。产品没有 TCP、HTTP、
 gRPC、TLS、remote address、remote worker、v2 compatibility adapter 或双协议。
 
+Socket startup 明确不提供 recovery。任何已有 pathname（包括 live/stale socket、
+regular file 或 symlink）都直接拒绝，不 unlink 也不 replace。Path 不存在时，并发
+bind 由 operating system 原子裁决。Bind 成功后通过固定 parent directory descriptor
+记录 parent 与 socket 的 `st_dev`/`st_ino` generation。Cleanup 只 unlink 当前仍匹配
+的 socket；任何 mismatch 或无法确认的观察都保留。Portable POSIX 的 `fstatat` 与
+`unlinkat` 仍是两条独立指令，因此这里提供 fail-closed generation hygiene，而不声称
+能对 hostile same-uid writer 实现原子 compare-and-unlink。Automatic stale-node
+reclaim 不属于本次 ephemeral reset；crash residue 由 operator 显式移除。
+
 Wire 传输 `WorkflowDocument` input 和公开 execution option/result。绝不传输
 semantic IR、optimized IR、execution-plan internal、plugin path、DSO handle、
 device handle、cache internal 或 kernel object pointer。
@@ -126,8 +135,9 @@ Daemon 保留 defensive validation，但不宣称 security product：
 - 平台支持时的负向、并发、restart-loss、Session-close、cancel、result release、
   ASAN、TSAN 与 fuzz test。
 
-Unix socket owner/mode 检查是本地 lifecycle correctness 和同用户 path hygiene，
-不是 authentication 或 tenant isolation。
+Unix socket mode/generation 检查是本地 lifecycle correctness 和同用户 path hygiene。
+Same-user 身份不允许旧实例删除 replacement inode；这些检查不是 authentication 或
+tenant isolation。
 
 ## 精确非目标
 

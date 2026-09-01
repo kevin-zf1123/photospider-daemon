@@ -54,9 +54,9 @@ bool write_fails_after_peer_close(int descriptor) {
  */
 bool peer_close_write_regression() {
   using ps::ipc::internal::accept_same_user;
+  using ps::ipc::internal::BoundUnixListener;
   using ps::ipc::internal::connect_unix_socket;
   using ps::ipc::internal::create_unix_listener;
-  using ps::ipc::internal::remove_socket_node;
   using ps::ipc::internal::UniqueDescriptor;
 
   const std::string path = socket_path();
@@ -64,12 +64,11 @@ bool peer_close_write_regression() {
   if (!listener_result.ok()) {
     return false;
   }
-  UniqueDescriptor listener = listener_result.take_value();
+  BoundUnixListener listener = listener_result.take_value();
 
   auto client_result = connect_unix_socket(path);
-  auto accepted_result = accept_same_user(listener.get());
+  auto accepted_result = accept_same_user(listener.descriptor.get());
   if (!client_result.ok() || !accepted_result.ok()) {
-    remove_socket_node(path);
     return false;
   }
   UniqueDescriptor client = client_result.take_value();
@@ -78,17 +77,16 @@ bool peer_close_write_regression() {
   const bool client_failed = write_fails_after_peer_close(client.get());
 
   client_result = connect_unix_socket(path);
-  accepted_result = accept_same_user(listener.get());
+  accepted_result = accept_same_user(listener.descriptor.get());
   if (!client_result.ok() || !accepted_result.ok()) {
-    remove_socket_node(path);
     return false;
   }
   client = client_result.take_value();
   accepted = accepted_result.take_value();
   client.reset();
   const bool accepted_failed = write_fails_after_peer_close(accepted.get());
-  listener.reset();
-  remove_socket_node(path);
+  listener.descriptor.reset();
+  listener.socket_node.remove();
   return client_failed && accepted_failed;
 }
 
