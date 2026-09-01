@@ -36,7 +36,9 @@ payload_size bytes of typed binary payload
 `EINTR`; sends suppress `SIGPIPE` where the platform supports it. Zero,
 oversized, truncated, or trailing bytes reject the complete message. The
 server sends one bounded typed failure before controlled close and never
-allocates from the attacker-declared frame length.
+allocates from the attacker-declared frame length. The reader retains at most
+the fixed eleven-byte request header for correlation and grows complete
+payload storage only as bytes actually arrive.
 
 Inside the payload, integers are little-endian. Text and byte vectors use a
 little-endian uint32 byte count followed by exact bytes. Text is canonical
@@ -63,10 +65,12 @@ transport or response-codec failure. It never automatically retries.
 
 Protocol-error correlation is recovered only when the received payload begins
 with a complete valid v3 version, nonzero request id, and known method. When it
-cannot be recovered (including length-prefix rejection, truncation, unknown
-version/method, or an incomplete header), the failed response uses the sole
-sentinel `request_id=0`, `method=daemon.info`. A normal request and a successful
-response may never use that sentinel.
+cannot be recovered (including length-prefix rejection, truncation before the
+complete header, or an unknown version/method), the failed response uses the
+sole sentinel `request_id=0`, `method=daemon.info`. If the complete valid header
+arrives and later method-body bytes are truncated, the failed response keeps
+that header's request id and method. A normal request and a successful response
+may never use the sentinel.
 
 ## Ephemeral identifiers
 
@@ -184,6 +188,10 @@ shutdown joins every remainder. No handler is detached.
 - Worker/callback exceptions are fenced into one Job failure.
 - Descriptor, worker, GraphContext, result, and queue ownership settles exactly
   once.
+- Listener construction prepares allocation-backed path/configuration state
+  before bind and retains descriptor/socket-node rollback guards until complete
+  private-state publication; every injected construction failure leaves the
+  exact path immediately rebindable.
 - Daemon production build and package consumer use only an isolated installed
   `Photospider::kernel` target.
 

@@ -16,12 +16,14 @@ sibling source target 或 private kernel include path。
 - Binary codec test 覆盖精确 enum、range、UTF-8、duplicate field、trailing byte、
   request correlation 与 protocol-error sentinel。
 - 真实 Unix-socket test 覆盖 oversized `0xffffffff`、truncated、duplicate、unknown-enum、
-  invalid-UTF-8 与 trailing-byte request。Server 返回一个 typed failure 后关闭，且不产生
-  state mutation 或大内存分配。
+  invalid-UTF-8 与 trailing-byte request。完整十一字节 header 后发生 body EOF 时保留
+  correlation；incomplete header 只使用 sentinel。Server 返回一个 typed failure 后关闭，
+  且不产生 state mutation 或 declared-length allocation。
 - Session test 覆盖正值 `maximum_sessions`、无 allocation/无 id 的 backpressure、
   close/reuse、精确 cleanup 与 concurrent admission。
 - Server test 覆盖正值 active-handler bound、typed backpressure、顺序运行期 reaping、
-  exception fencing 与 shutdown join。
+  exception fencing、shutdown join，以及带 descriptor/node cleanup 与 same-path rebind 的
+  deterministic post-bind construction failure。
 - Installed-consumer test 证明 `bin/photospiderd` 已安装，同时 CMake export set 只含
   `PhotospiderDaemon::client`。
 

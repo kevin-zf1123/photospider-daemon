@@ -11,6 +11,19 @@
 namespace ps::ipc::internal {
 
 /**
+ * @brief Deterministic private construction stages exposed to lifecycle tests.
+ *
+ * @note Hooks observe only bound-listener publication boundaries and do not
+ * become a public daemon configuration surface.
+ */
+enum class ServerConstructionStage : std::uint32_t {
+  /** @brief Listener bind succeeded but private state is not allocated. */
+  AfterListenerBind = 1U,
+  /** @brief Service exists but handler storage/listener transfer is pending. */
+  BeforeHandlerStorage = 2U,
+};
+
+/**
  * @brief Fixed local server transport and orchestration configuration.
  * @note Connection and service bounds are positive process-global local
  * controls, not tenant quotas or remote admission policy.
@@ -33,6 +46,14 @@ struct ServerConfig final {
    * Production callers normally leave it empty.
    */
   std::function<void()> handler_entry_hook;
+  /**
+   * @brief Optional private construction observer/fault-injection callback.
+   *
+   * The callback runs synchronously on the constructing thread at a named
+   * post-bind stage. Exceptions must leave no descriptor or socket node.
+   * Production callers normally leave it empty.
+   */
+  std::function<void(ServerConstructionStage)> construction_hook;
 };
 
 /**
@@ -50,6 +71,7 @@ class Server final {
    * @throws std::runtime_error If the local listener cannot be created.
    * @throws std::bad_alloc If service or transport state allocation fails.
    * @throws std::system_error If bounded worker creation fails.
+   * @throws Any other exception raised by the private construction test hook.
    * @note Any failure after bind removes the socket node before propagating.
    */
   explicit Server(ServerConfig config);

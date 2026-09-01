@@ -144,6 +144,7 @@ int main(int argc, char** argv) {
             options.maximum_sessions, options.gpu_enabled},
         32,
         options.maximum_connections,
+        {},
         {}});
     const ps::Status status = server.run();
     if (!status.ok()) {

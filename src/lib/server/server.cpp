@@ -24,13 +24,24 @@ namespace {
  * @param descriptor Connected local stream descriptor.
  * @param status Required non-success protocol/backpressure status.
  * @param request_payload Optional malformed payload for correlation recovery.
+ * @param progress Optional fixed prefix retained by an incomplete frame read.
  * @throws Nothing.
- * @note Encoding/writing failure simply leaves connection teardown to owner.
+ * @note Full payload takes precedence over progress. Prefix materialization is
+ * capped at eleven bytes; encoding/writing failure leaves teardown to owner.
  */
 void write_protocol_failure(
     int descriptor, const Status& status,
-    const std::vector<std::uint8_t>* request_payload = nullptr) noexcept {
+    const std::vector<std::uint8_t>* request_payload = nullptr,
+    const FrameReadProgress* progress = nullptr) noexcept {
   try {
+    std::vector<std::uint8_t> prefix;
+    if (!request_payload && progress && progress->payload_prefix_size != 0U) {
+      prefix.assign(
+          progress->payload_prefix.begin(),
+          progress->payload_prefix.begin() +
+              static_cast<std::ptrdiff_t>(progress->payload_prefix_size));
+      request_payload = &prefix;
+    }
     auto encoded = encode_protocol_error(status, request_payload);
     if (encoded.ok()) {
       static_cast<void>(write_frame(descriptor, encoded.value()));
@@ -116,15 +127,21 @@ struct Server::Impl final {
    * @brief Constructs service and takes ownership of a bound listener.
    * @param config Validated fixed configuration.
    * @param listener Bound restricted listener descriptor.
-   * @throws std::bad_alloc If service or configuration allocation fails.
+   * @throws std::bad_alloc If service/handler storage allocation or the
+   * private construction hook fails that way.
    * @throws std::system_error If service worker creation fails.
-   * @note The raw listener descriptor is thereafter closed only by `stop()`.
+   * @throws Any other exception deliberately raised by the private test hook.
+   * @note The parameter retains RAII ownership through every throwing step;
+   * only complete construction transfers the descriptor to `stop()`.
    */
   Impl(ServerConfig config, UniqueDescriptor listener)
-      : config(std::move(config)),
-        service(this->config.service),
-        listener_fd(listener.release()) {
+      : config(std::move(config)), service(this->config.service) {
+    if (this->config.construction_hook) {
+      this->config.construction_hook(
+          ServerConstructionStage::BeforeHandlerStorage);
+    }
     handlers.reserve(this->config.maximum_active_connections);
+    listener_fd.store(listener.release(), std::memory_order_release);
   }
 
   /**
@@ -147,6 +164,7 @@ struct Server::Impl final {
    */
   void serve_connection(UniqueDescriptor connection) noexcept {
     const int descriptor = connection.get();
+    FrameReadProgress frame_progress;
     bool registered = false;
     try {
       std::lock_guard<std::mutex> lock(connections_mutex);
@@ -160,10 +178,11 @@ struct Server::Impl final {
         config.handler_entry_hook();
       }
       while (!stopping.load(std::memory_order_acquire)) {
-        auto frame = read_frame(descriptor);
+        auto frame = read_frame(descriptor, &frame_progress);
         if (!frame.ok()) {
           if (frame.status().code != ErrorCode::NotFound) {
-            write_protocol_failure(descriptor, frame.status());
+            write_protocol_failure(descriptor, frame.status(), nullptr,
+                                   &frame_progress);
           }
           break;
         }
@@ -188,16 +207,20 @@ struct Server::Impl final {
       }
     } catch (const std::bad_alloc&) {
       write_protocol_failure(
-          descriptor, Status::failure(ErrorCode::ResourceExhausted,
-                                      "connection handler allocation failed"));
+          descriptor,
+          Status::failure(ErrorCode::ResourceExhausted,
+                          "connection handler allocation failed"),
+          nullptr, &frame_progress);
     } catch (const std::exception& error) {
-      write_protocol_failure(
-          descriptor, Status::failure(ErrorCode::Internal, error.what()));
+      write_protocol_failure(descriptor,
+                             Status::failure(ErrorCode::Internal, error.what()),
+                             nullptr, &frame_progress);
     } catch (...) {
       write_protocol_failure(
           descriptor,
           Status::failure(ErrorCode::Internal,
-                          "connection handler raised an exception"));
+                          "connection handler raised an exception"),
+          nullptr, &frame_progress);
     }
     if (registered) {
       std::lock_guard<std::mutex> lock(connections_mutex);
@@ -297,13 +320,16 @@ Server::Server(ServerConfig config) {
       config.maximum_active_connections > 4096U) {
     throw std::invalid_argument("local server configuration is invalid");
   }
+  const std::string socket_path = config.socket_path;
   auto listener =
       create_unix_listener(config.socket_path, config.listen_backlog);
   if (!listener.ok()) {
     throw std::runtime_error(listener.status().message);
   }
-  const std::string socket_path = config.socket_path;
   try {
+    if (config.construction_hook) {
+      config.construction_hook(ServerConstructionStage::AfterListenerBind);
+    }
     impl_ = std::make_unique<Impl>(std::move(config), listener.take_value());
   } catch (...) {
     remove_socket_node(socket_path);
