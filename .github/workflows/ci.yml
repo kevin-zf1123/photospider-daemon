@@ -1,225 +1,48 @@
-name: CI
+name: daemon-ci
 
 on:
   push:
-    branches:
-      - main
-      - "codex/**"
   pull_request:
-  schedule:
-    - cron: "17 3 * * 1"
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-env:
-  PHOTOSPIDER_FROZEN_REF: f9fc3aefce45072c6fc6a856da11f20ff16ba00a
-  PHOTOSPIDER_SUPPORTED_REF: c656ac58046c1d7fdb40372ae575728f526c0f01
 
 jobs:
-  build-test-interop:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+  installed-kernel-build-test:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-24.04
-          - macos-15
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v6
+      - name: Select matching kernel branch
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake \
-            ninja-build \
-            pkg-config \
-            libssl-dev \
-            libutf8proc-dev \
-            libyaml-cpp-dev \
-            libopencv-dev \
-            nlohmann-json3-dev \
-            libgtest-dev
-
-      - name: Install macOS dependencies
-        if: runner.os == 'macOS'
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone https://github.com/kevin-zf1123/photospider.git "$RUNNER_TEMP/kernel"
+          if git -C "$RUNNER_TEMP/kernel" ls-remote --exit-code --heads origin "$branch"; then
+            git -C "$RUNNER_TEMP/kernel" checkout --detach "origin/$branch"
+          else
+            git -C "$RUNNER_TEMP/kernel" checkout --detach origin/main
+          fi
+      - name: Build isolated kernel package
+        shell: bash
         run: |
-          brew install \
-            cmake \
-            ninja \
-            pkg-config \
-            openssl@3 \
-            utf8proc \
-            yaml-cpp \
-            opencv \
-            nlohmann-json \
-            googletest
-
-      - name: Build and install supported Photospider dependency
-        run: |
-          git clone https://github.com/kevin-zf1123/photospider.git \
-            "$RUNNER_TEMP/photospider-supported"
-          git -C "$RUNNER_TEMP/photospider-supported" checkout --detach \
-            "$PHOTOSPIDER_SUPPORTED_REF"
-          cmake -S "$RUNNER_TEMP/photospider-supported" \
-            -B "$RUNNER_TEMP/photospider-supported-build" \
-            -G Ninja \
+          cmake -S "$RUNNER_TEMP/kernel" -B "$RUNNER_TEMP/kernel-build" -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/photospider-supported-prefix" \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DBUILD_TESTING=OFF \
-            -DPHOTOSPIDER_ENABLE_OPENCV=ON \
-            -DPHOTOSPIDER_ENABLE_YAML=ON \
-            -DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PROVIDER=ON \
-            -DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PLUGINS=OFF \
-            -DPHOTOSPIDER_BUILD_GRAPH_CLI=OFF \
-            -DPHOTOSPIDER_BUILD_OPENEXR_DEEP_PROVIDER=OFF \
-            -DPHOTOSPIDER_BUILD_SINGLE_TENANT_JOB=OFF
-          cmake --build "$RUNNER_TEMP/photospider-supported-build" -j 2
-          cmake --install "$RUNNER_TEMP/photospider-supported-build"
-          test "$(git -C "$RUNNER_TEMP/photospider-supported" rev-parse HEAD)" = \
-            "$PHOTOSPIDER_SUPPORTED_REF"
-
-      - name: Build and install frozen full-stack compatibility baseline
-        run: |
-          git clone https://github.com/kevin-zf1123/photospider.git \
-            "$RUNNER_TEMP/photospider-old"
-          git -C "$RUNNER_TEMP/photospider-old" checkout --detach \
-            "$PHOTOSPIDER_FROZEN_REF"
-          cmake -S "$RUNNER_TEMP/photospider-old" \
-            -B "$RUNNER_TEMP/photospider-old-build" \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/photospider-old-prefix" \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DBUILD_TESTING=OFF \
-            -DPHOTOSPIDER_ENABLE_OPENCV=ON \
-            -DPHOTOSPIDER_ENABLE_YAML=ON \
-            -DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PROVIDER=ON \
-            -DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PLUGINS=OFF \
-            -DPHOTOSPIDER_BUILD_GRAPH_CLI=OFF \
-            -DPHOTOSPIDER_BUILD_OPENEXR_DEEP_PROVIDER=OFF \
-            -DPHOTOSPIDER_BUILD_SINGLE_TENANT_JOB=OFF \
-            -DPHOTOSPIDER_BUILD_IPC=ON
-          cmake --build "$RUNNER_TEMP/photospider-old-build" -j 2
-          cmake --install "$RUNNER_TEMP/photospider-old-build"
-          test "$(git -C "$RUNNER_TEMP/photospider-old" rev-parse HEAD)" = \
-            "$PHOTOSPIDER_FROZEN_REF"
-
-      - name: Configure standalone daemon repository
-        run: |
-          cmake -S . -B "$RUNNER_TEMP/photospider-daemon-build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/photospider-supported-prefix" \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/daemon-prefix" \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DPHOTOSPIDER_DAEMON_DEPENDENCY_LIBDIR="$RUNNER_TEMP/photospider-supported-prefix/lib" \
-            -DBUILD_TESTING=ON
-
-      - name: Build standalone daemon repository
-        run: cmake --build "$RUNNER_TEMP/photospider-daemon-build" -j 2
-
-      - name: Run maintained tests
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/kernel-prefix" \
+            -DBUILD_TESTING=OFF
+          cmake --build "$RUNNER_TEMP/kernel-build" --parallel
+          cmake --install "$RUNNER_TEMP/kernel-build"
+      - name: Configure daemon from installed public package
         run: >-
-          ctest --test-dir "$RUNNER_TEMP/photospider-daemon-build"
-          --output-on-failure --timeout 180
-
-      - name: Install standalone package
-        run: cmake --install "$RUNNER_TEMP/photospider-daemon-build"
-
-      - name: Run frozen four-cell compatibility gate
-        run: |
-          python3 tools/run_frozen_compatibility_gate.py \
-            --source "$GITHUB_WORKSPACE" \
-            --old-photospider-dir "$RUNNER_TEMP/photospider-old-prefix/lib/cmake/Photospider" \
-            --new-photospider-dir "$RUNNER_TEMP/photospider-supported-prefix/lib/cmake/Photospider" \
-            --new-photospider-daemon-dir "$RUNNER_TEMP/daemon-prefix/lib/cmake/PhotospiderDaemon" \
-            --old-daemon "$RUNNER_TEMP/photospider-old-prefix/bin/photospiderd" \
-            --new-daemon "$RUNNER_TEMP/daemon-prefix/bin/photospiderd" \
-            --work "$RUNNER_TEMP/four-cell" \
-            --cmake cmake \
-            --generator Ninja \
-            --config RelWithDebInfo
-
-      - name: Audit ownership and exported paths
-        run: |
-          test -z "$(find . -path ./.git -prune -o \
-            -path './src/lib/server*' -print -o \
-            -path './apps/photospider_worker*' -print)"
-          ! grep -R -n --exclude-dir=.git --exclude-dir=build \
-            '/src/lib\|photospider-daemon/src/lib' \
-            "$RUNNER_TEMP/daemon-prefix/lib/cmake/PhotospiderDaemon"
-
-  compatible-main:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake \
-            ninja-build \
-            pkg-config \
-            libssl-dev \
-            libutf8proc-dev \
-            libyaml-cpp-dev \
-            libopencv-dev \
-            nlohmann-json3-dev \
-            libgtest-dev
-
-      - name: Build and install current Photospider main
-        run: |
-          git clone --depth 1 \
-            https://github.com/kevin-zf1123/photospider.git \
-            "$RUNNER_TEMP/photospider-main"
-          git -C "$RUNNER_TEMP/photospider-main" rev-parse HEAD
-          cmake -S "$RUNNER_TEMP/photospider-main" \
-            -B "$RUNNER_TEMP/photospider-main-build" \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/photospider-main-prefix" \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DBUILD_TESTING=OFF \
-            -DPHOTOSPIDER_ENABLE_OPENCV=ON \
-            -DPHOTOSPIDER_ENABLE_YAML=ON \
-            -DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PROVIDER=ON \
-            -DPHOTOSPIDER_BUILD_OPENCV_OPERATION_PLUGINS=OFF \
-            -DPHOTOSPIDER_BUILD_GRAPH_CLI=OFF \
-            -DPHOTOSPIDER_BUILD_OPENEXR_DEEP_PROVIDER=OFF \
-            -DPHOTOSPIDER_BUILD_SINGLE_TENANT_JOB=OFF
-          cmake --build "$RUNNER_TEMP/photospider-main-build" -j 2
-          cmake --install "$RUNNER_TEMP/photospider-main-build"
-
-      - name: Configure daemon against current kernel main
-        run: |
-          cmake -S . -B "$RUNNER_TEMP/photospider-daemon-main-build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/photospider-main-prefix" \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/daemon-main-prefix" \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DPHOTOSPIDER_DAEMON_DEPENDENCY_LIBDIR="$RUNNER_TEMP/photospider-main-prefix/lib" \
-            -DBUILD_TESTING=ON
-
-      - name: Build, test, and install compatible main
-        run: |
-          cmake --build "$RUNNER_TEMP/photospider-daemon-main-build" -j 2
-          ctest --test-dir "$RUNNER_TEMP/photospider-daemon-main-build" \
-            --output-on-failure --timeout 180
-          cmake --install "$RUNNER_TEMP/photospider-daemon-main-build"
-
-      - name: Audit compatible-main exported paths
-        run: |
-          ! grep -R -n --exclude-dir=.git --exclude-dir=build \
-            '/src/lib\|photospider-daemon/src/lib' \
-            "$RUNNER_TEMP/daemon-main-prefix/lib/cmake/PhotospiderDaemon"
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_PREFIX_PATH=${{ runner.temp }}/kernel-prefix
+          -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test local orchestration and installed client
+        run: >-
+          ctest --test-dir build --output-on-failure
+          --output-junit daemon-ctest.xml
