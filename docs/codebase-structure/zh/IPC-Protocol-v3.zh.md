@@ -35,7 +35,8 @@ payload_size bytes typed binary payload
 `payload_size` 范围为 `1..4,194,304`。read/write 处理 partial progress 与 `EINTR`；
 平台支持时 send 抑制 `SIGPIPE`。zero、oversized、truncated 或 trailing bytes 会使
 完整 message 被拒绝。Server 在受控 close 前发送一个 bounded typed failure，且绝不
-根据攻击者声明的 frame length 分配内存。
+根据攻击者声明的 frame length 分配内存。Reader 最多保留固定十一字节 request header
+用于 correlation，并只随实际到达的 byte 增长完整 payload storage。
 
 Payload 内 integer 使用 little-endian。Text/byte vector 使用 little-endian uint32
 byte count，随后是精确 bytes。Text 必须是 canonical UTF-8，并遵守 field-specific
@@ -60,9 +61,10 @@ transport/response-codec failure 后失效 connection；它绝不自动 retry。
 
 只有 received payload 以完整合法的 v3 version、nonzero request id 与 known method
 开头时，才能恢复 protocol-error correlation。无法恢复时（包括 length-prefix rejection、
-truncation、unknown version/method 或 incomplete header），failed response 使用唯一
-sentinel `request_id=0`、`method=daemon.info`。普通 request 与 successful response
-绝不能使用该 sentinel。
+complete header 前的 truncation 或 unknown version/method），failed response 使用唯一
+sentinel `request_id=0`、`method=daemon.info`。如果完整合法 header 已到达、后续
+method-body byte 才截断，failed response 保留该 header 的 request id 与 method。普通
+request 与 successful response 绝不能使用 sentinel。
 
 ## Ephemeral identifier
 
@@ -170,6 +172,9 @@ shutdown join 每个剩余 thread。不存在 detached handler。
 - Job state 单调，cancellation 后不能发布 success。
 - Worker/callback exception 被 fenced 到一个 Job failure。
 - descriptor、worker、GraphContext、result 与 queue ownership 恰好 settle 一次。
+- Listener construction 在 bind 前准备 allocation-backed path/configuration state，并让
+  descriptor/socket-node rollback guard 持有到完整 private-state publication；每个 injected
+  construction failure 后 exact path 都可立即重新 bind。
 - daemon production build/package consumer 只使用 isolated installed
   `Photospider::kernel` target。
 

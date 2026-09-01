@@ -41,9 +41,32 @@ ps::WorkflowDocument document() {
  * @note Behavioral failures otherwise return nonzero through `PS_IPC_CHECK`.
  */
 int main() {
-  using namespace ps;
-  using namespace ps::ipc;
-  using namespace ps::ipc::internal;
+  using ps::Backend;
+  using ps::ElementType;
+  using ps::ErrorCode;
+  using ps::OperationTiming;
+  using ps::Region;
+  using ps::Status;
+  using ps::StridedLayout;
+  using ps::Value;
+  using ps::ValueDescriptor;
+  using ps::ValueFacet;
+  using ps::ipc::Client;
+  using ps::ipc::JobId;
+  using ps::ipc::JobState;
+  using ps::ipc::SessionId;
+  using ps::ipc::internal::decode_protocol_error;
+  using ps::ipc::internal::decode_request;
+  using ps::ipc::internal::decode_response;
+  using ps::ipc::internal::encode_protocol_error;
+  using ps::ipc::internal::encode_request;
+  using ps::ipc::internal::encode_response;
+  using ps::ipc::internal::Method;
+  using ps::ipc::internal::method_inventory;
+  using ps::ipc::internal::read_frame;
+  using ps::ipc::internal::Request;
+  using ps::ipc::internal::Response;
+  using ps::ipc::internal::write_frame;
 
   Request request;
   request.request_id = 7U;

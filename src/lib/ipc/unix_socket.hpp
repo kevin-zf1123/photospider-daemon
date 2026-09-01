@@ -34,8 +34,21 @@ class UniqueDescriptor final {
    */
   ~UniqueDescriptor() noexcept;
 
-  UniqueDescriptor(const UniqueDescriptor&) = delete;
-  UniqueDescriptor& operator=(const UniqueDescriptor&) = delete;
+  /**
+   * @brief Forbids duplicating exact descriptor ownership.
+   * @param other Source owner that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   * @note One descriptor has at most one closing owner.
+   */
+  UniqueDescriptor(const UniqueDescriptor& other) = delete;
+  /**
+   * @brief Forbids copy assignment of exact descriptor ownership.
+   * @param other Source owner that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   * @note Use move assignment for explicit transfer.
+   */
+  UniqueDescriptor& operator=(const UniqueDescriptor& other) = delete;
   /**
    * @brief Transfers descriptor ownership from another object.
    * @param other Source left without descriptor ownership.

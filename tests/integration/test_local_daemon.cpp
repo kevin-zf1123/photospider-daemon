@@ -1,11 +1,15 @@
+#include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -19,6 +23,8 @@
 #include "photospider/ipc/client.hpp"
 #include "server/server.hpp"
 #include "support/test_support.hpp"
+
+namespace internal = ps::ipc::internal;
 
 namespace {
 
@@ -74,7 +80,6 @@ ps::WorkflowDocument delayed_document(std::int64_t milliseconds) {
  * @note Polling is test-only and never changes Job state.
  */
 ps::ipc::JobStatus wait_terminal(ps::ipc::Client* client, ps::ipc::JobId id) {
-  using namespace std::chrono_literals;
   for (int attempt = 0; attempt < 400; ++attempt) {
     auto status = client->job_status(id);
     if (!status.ok()) {
@@ -85,7 +90,7 @@ ps::ipc::JobStatus wait_terminal(ps::ipc::Client* client, ps::ipc::JobId id) {
         status.value().state == ps::ipc::JobState::Cancelled) {
       return status.value();
     }
-    std::this_thread::sleep_for(5ms);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   throw std::runtime_error("execution did not reach terminal state");
 }
@@ -101,7 +106,6 @@ ps::ipc::JobStatus wait_terminal(ps::ipc::Client* client, ps::ipc::JobId id) {
  */
 ps::ipc::JobStatus wait_state(ps::ipc::Client* client, ps::ipc::JobId id,
                               ps::ipc::JobState expected) {
-  using namespace std::chrono_literals;
   for (int attempt = 0; attempt < 400; ++attempt) {
     auto status = client->job_status(id);
     if (!status.ok()) {
@@ -115,7 +119,7 @@ ps::ipc::JobStatus wait_state(ps::ipc::Client* client, ps::ipc::JobId id,
         status.value().state == ps::ipc::JobState::Cancelled) {
       throw std::runtime_error("execution reached terminal state too early");
     }
-    std::this_thread::sleep_for(5ms);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   throw std::runtime_error("execution did not reach expected state");
 }
@@ -227,6 +231,112 @@ std::vector<std::uint8_t> duplicate_parameter_request(
 }
 
 /**
+ * @brief Builds a frame whose valid request header is followed by body EOF.
+ * @param request_id Nonzero correlation id encoded in the complete header.
+ * @param method Known request method encoded in the complete header.
+ * @return Four-byte declared length plus exactly eleven request-header bytes.
+ * @throws std::bad_alloc If fixture storage allocation fails.
+ * @note The declared payload is one byte longer than the returned payload.
+ */
+std::vector<std::uint8_t> correlated_truncated_frame(
+    std::uint64_t request_id, ps::ipc::internal::Method method) {
+  std::vector<std::uint8_t> bytes{0U, 0U, 0U, 12U, 3U, 0U};
+  append_u64(&bytes, request_id);
+  bytes.push_back(static_cast<std::uint8_t>(method));
+  return bytes;
+}
+
+/**
+ * @brief Captures one deterministic post-bind construction-failure outcome.
+ *
+ * @note Every field is computed after test-owned cleanup, so later cases can
+ * reuse process descriptor and filesystem state.
+ */
+struct ConstructionFailureObservation final {
+  /** @brief True when the injected `std::bad_alloc` propagated. */
+  bool exception_propagated = false;
+  /** @brief True when the listener descriptor returned to the free set. */
+  bool descriptor_released = false;
+  /** @brief True when no socket filesystem node remained. */
+  bool socket_node_removed = false;
+  /** @brief True when the same exact path could be bound again. */
+  bool rebound = false;
+};
+
+/**
+ * @brief Finds the lowest currently available descriptor number.
+ * @return Descriptor number observed through a temporary `/dev/null` open.
+ * @throws std::runtime_error If the probe cannot open `/dev/null`.
+ * @note The probe closes its descriptor before returning.
+ */
+int next_available_descriptor() {
+  const int descriptor = ::open("/dev/null", O_RDONLY);
+  if (descriptor < 0) {
+    throw std::runtime_error("could not probe descriptor inventory");
+  }
+  ::close(descriptor);
+  return descriptor;
+}
+
+/**
+ * @brief Injects one post-bind constructor failure and audits cleanup.
+ * @param stage Exact private server construction stage that throws.
+ * @return Descriptor/node/rebind observations after bounded cleanup.
+ * @throws std::bad_alloc If test configuration allocation fails.
+ * @throws std::runtime_error If descriptor probing fails.
+ * @note A leaked descriptor/socket node is removed only after its failure is
+ * recorded so the following test case remains isolated.
+ */
+ConstructionFailureObservation observe_construction_failure(
+    ps::ipc::internal::ServerConstructionStage stage) {
+  using ps::ipc::internal::Server;
+  using ps::ipc::internal::ServerConfig;
+  const std::string path = socket_path();
+  const int descriptor_before = next_available_descriptor();
+  ServerConfig config{
+      path, ps::ipc::internal::ServiceConfig{1U, 4U, 2U, false}, 4, 2U, {}, {}};
+  config.construction_hook = [stage](auto observed) {
+    if (observed == stage) {
+      throw std::bad_alloc();
+    }
+  };
+
+  ConstructionFailureObservation observation;
+  try {
+    Server rejected(std::move(config));
+  } catch (const std::bad_alloc&) {
+    observation.exception_propagated = true;
+  }
+
+  struct stat existing{};
+  errno = 0;
+  observation.socket_node_removed =
+      ::lstat(path.c_str(), &existing) != 0 && errno == ENOENT;
+  const int descriptor_after = next_available_descriptor();
+  observation.descriptor_released = descriptor_after == descriptor_before;
+
+  if (!observation.socket_node_removed) {
+    ps::ipc::internal::remove_socket_node(path);
+  }
+  if (!observation.descriptor_released) {
+    ::close(descriptor_before);
+  }
+  try {
+    Server rebound(
+        ServerConfig{path,
+                     ps::ipc::internal::ServiceConfig{1U, 4U, 2U, false},
+                     4,
+                     2U,
+                     {},
+                     {}});
+    observation.rebound = true;
+  } catch (...) {
+    observation.rebound = false;
+  }
+  return observation;
+}
+
+/**
  * @brief Sends one malformed payload and reads the server typed error.
  * @param path Bound local server socket path.
  * @param payload Complete malformed frame payload.
@@ -236,7 +346,10 @@ std::vector<std::uint8_t> duplicate_parameter_request(
  */
 ps::ipc::internal::Response malformed_payload_response(
     const std::string& path, const std::vector<std::uint8_t>& payload) {
-  using namespace ps::ipc::internal;
+  using ps::ipc::internal::connect_unix_socket;
+  using ps::ipc::internal::decode_protocol_error;
+  using ps::ipc::internal::read_frame;
+  using ps::ipc::internal::write_frame;
   auto connection = connect_unix_socket(path);
   if (!connection.ok() ||
       !write_frame(connection.value().get(), payload).ok()) {
@@ -270,7 +383,9 @@ ps::ipc::internal::Response malformed_payload_response(
 ps::ipc::internal::Response malformed_stream_response(
     const std::string& path, const std::vector<std::uint8_t>& bytes,
     bool finish_writes) {
-  using namespace ps::ipc::internal;
+  using ps::ipc::internal::connect_unix_socket;
+  using ps::ipc::internal::decode_protocol_error;
+  using ps::ipc::internal::read_frame;
   auto connection = connect_unix_socket(path);
   if (!connection.ok()) {
     throw std::runtime_error("could not connect malformed stream client");
@@ -311,12 +426,11 @@ ps::ipc::internal::Response malformed_stream_response(
  */
 void wait_handler_count(ps::ipc::internal::Server* server,
                         std::uint32_t expected) {
-  using namespace std::chrono_literals;
   for (int attempt = 0; attempt < 400; ++attempt) {
     if (server->active_handler_count() == expected) {
       return;
     }
-    std::this_thread::sleep_for(5ms);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   throw std::runtime_error("server handler count did not settle");
 }
@@ -333,8 +447,22 @@ void wait_handler_count(ps::ipc::internal::Server* server,
  * @note Behavioral failures otherwise return nonzero through `PS_IPC_CHECK`.
  */
 int main() {
-  using namespace ps;
-  using namespace ps::ipc;
+  using ps::ErrorCode;
+  using ps::ipc::Client;
+  using ps::ipc::JobId;
+  using ps::ipc::JobState;
+  using ps::ipc::SessionId;
+
+  for (internal::ServerConstructionStage stage :
+       {internal::ServerConstructionStage::AfterListenerBind,
+        internal::ServerConstructionStage::BeforeHandlerStorage}) {
+    const ConstructionFailureObservation observation =
+        observe_construction_failure(stage);
+    PS_IPC_CHECK(observation.exception_propagated);
+    PS_IPC_CHECK(observation.descriptor_released);
+    PS_IPC_CHECK(observation.socket_node_removed);
+    PS_IPC_CHECK(observation.rebound);
+  }
 
   {
     internal::Service service(internal::ServiceConfig{1U, 4U, 2U, false});
@@ -438,6 +566,7 @@ int main() {
                                internal::ServiceConfig{1U, 8U, 4U, false},
                                8,
                                4U,
+                               {},
                                {}});
     auto server_result = start_server(&server);
 
@@ -451,6 +580,16 @@ int main() {
         malformed_stream_response(malformed_path, {0U, 0U, 0U, 4U, 1U}, true);
     PS_IPC_CHECK(truncated.status.code == ErrorCode::InvalidArgument);
     PS_IPC_CHECK(truncated.request_id == 0U);
+
+    const internal::Response correlated_truncation = malformed_stream_response(
+        malformed_path,
+        correlated_truncated_frame(304U, internal::Method::SessionCreate),
+        true);
+    PS_IPC_CHECK(correlated_truncation.status.code ==
+                 ErrorCode::InvalidArgument);
+    PS_IPC_CHECK(correlated_truncation.request_id == 304U);
+    PS_IPC_CHECK(correlated_truncation.method ==
+                 internal::Method::SessionCreate);
 
     internal::Request info_request;
     info_request.request_id = 301U;
@@ -523,6 +662,7 @@ int main() {
                                internal::ServiceConfig{1U, 4U, 2U, false},
                                4,
                                1U,
+                               {},
                                {}});
     auto server_result = start_server(&server);
     auto held = internal::connect_unix_socket(bounded_path);
@@ -555,6 +695,7 @@ int main() {
         internal::ServiceConfig{1U, 4U, 2U, false},
         4,
         2U,
+        {},
         {}};
     exception_config.handler_entry_hook = [&throw_once] {
       if (throw_once.exchange(false)) {
@@ -587,6 +728,7 @@ int main() {
                                internal::ServiceConfig{2U, 32U, 16U, false},
                                8,
                                64U,
+                               {},
                                {}});
     auto server_result = start_server(&server);
 
@@ -696,6 +838,7 @@ int main() {
                                internal::ServiceConfig{1U, 1U, 4U, false},
                                8,
                                64U,
+                               {},
                                {}});
     auto server_result = start_server(&server);
     Client client;

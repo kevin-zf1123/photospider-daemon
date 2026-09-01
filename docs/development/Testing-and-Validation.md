@@ -18,12 +18,16 @@ never a sibling source target or private kernel include path.
 - Binary codec tests cover exact enums, ranges, UTF-8, duplicate fields,
   trailing bytes, request correlation, and the protocol-error sentinel.
 - Real Unix-socket tests cover oversized `0xffffffff`, truncated, duplicate,
-  unknown-enum, invalid-UTF-8, and trailing-byte requests. The server returns
-  one typed failure and closes without state mutation or large allocation.
+  unknown-enum, invalid-UTF-8, and trailing-byte requests. A complete eleven-
+  byte header followed by body EOF preserves correlation; an incomplete header
+  uses only the sentinel. The server returns one typed failure and closes
+  without state mutation or declared-length allocation.
 - Session tests cover positive `maximum_sessions`, no-allocation/no-id
   backpressure, close/reuse, exact cleanup, and concurrent admission.
 - Server tests cover the positive active-handler bound, typed backpressure,
-  sequential runtime reaping, exception fencing, and shutdown join.
+  sequential runtime reaping, exception fencing, shutdown join, and
+  deterministic post-bind construction failures with descriptor/node cleanup
+  plus same-path rebinding.
 - Installed-consumer tests prove that `bin/photospiderd` is installed while
   only `PhotospiderDaemon::client` appears in the CMake export set.
 

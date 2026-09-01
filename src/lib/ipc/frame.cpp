@@ -3,7 +3,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -53,6 +56,57 @@ Status read_exact(int descriptor, void* destination, std::size_t size,
 }
 
 /**
+ * @brief Receives one bounded payload while retaining fixed prefix progress.
+ * @param descriptor Connected stream descriptor.
+ * @param size Exact validated payload byte count.
+ * @param payload Nonnull destination that grows only after received bytes.
+ * @param progress Optional fixed request-header prefix destination.
+ * @return Success or transport/truncation failure.
+ * @throws std::bad_alloc If received-byte storage growth fails.
+ * @note At most one fixed chunk is reserved before the peer supplies bytes;
+ * EOF is always mid-frame failure because the length header is complete.
+ */
+Status read_payload(int descriptor, std::size_t size,
+                    std::vector<std::uint8_t>* payload,
+                    FrameReadProgress* progress) {
+  constexpr std::size_t kReadChunkBytes = 16U * 1024U;
+  std::array<std::uint8_t, kReadChunkBytes> chunk{};
+  payload->clear();
+  payload->reserve(std::min(size, chunk.size()));
+  while (payload->size() < size) {
+    const std::size_t remaining = size - payload->size();
+    const std::size_t requested = std::min(remaining, chunk.size());
+    const ssize_t count = ::recv(descriptor, chunk.data(), requested, 0);
+    if (count == 0) {
+      return Status::failure(ErrorCode::InvalidArgument,
+                             "local peer closed during a frame");
+    }
+    if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return Status::failure(
+          ErrorCode::Internal,
+          std::string("local frame read failed: ") + std::strerror(errno));
+    }
+    const std::size_t received = static_cast<std::size_t>(count);
+    if (progress &&
+        progress->payload_prefix_size < kRequestCorrelationPrefixBytes) {
+      const std::size_t captured =
+          std::min(received, kRequestCorrelationPrefixBytes -
+                                 progress->payload_prefix_size);
+      std::copy_n(
+          chunk.begin(), captured,
+          progress->payload_prefix.begin() +
+              static_cast<std::ptrdiff_t>(progress->payload_prefix_size));
+      progress->payload_prefix_size += captured;
+    }
+    payload->insert(payload->end(), chunk.data(), chunk.data() + received);
+  }
+  return Status::success();
+}
+
+/**
  * @brief Writes an exact byte range without SIGPIPE.
  * @param descriptor Connected stream descriptor.
  * @param source Immutable byte range.
@@ -94,7 +148,11 @@ Status write_exact(int descriptor, const void* source, std::size_t size) {
  * @brief Implements bounded local frame reading.
  * @copydetails read_frame
  */
-Result<std::vector<std::uint8_t>> read_frame(int descriptor) {
+Result<std::vector<std::uint8_t>> read_frame(int descriptor,
+                                             FrameReadProgress* progress) {
+  if (progress) {
+    *progress = FrameReadProgress{};
+  }
   if (descriptor < 0) {
     return Result<std::vector<std::uint8_t>>(Status::failure(
         ErrorCode::InvalidArgument, "frame descriptor is invalid"));
@@ -113,8 +171,8 @@ Result<std::vector<std::uint8_t>> read_frame(int descriptor) {
     return Result<std::vector<std::uint8_t>>(Status::failure(
         ErrorCode::InvalidArgument, "frame payload length is outside bounds"));
   }
-  std::vector<std::uint8_t> payload(size);
-  status = read_exact(descriptor, payload.data(), payload.size(), &clean_eof);
+  std::vector<std::uint8_t> payload;
+  status = read_payload(descriptor, size, &payload, progress);
   if (!status.ok()) {
     return Result<std::vector<std::uint8_t>>(std::move(status));
   }
