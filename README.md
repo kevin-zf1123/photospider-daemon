@@ -8,8 +8,8 @@ governed by [ADR 0001](docs/adr/0001-breaking-product-boundary-scope-reset.md).
 
 - `PhotospiderDaemon::client` is the installed typed local-IPC client.
 - `photospiderd` owns a protected local socket, ephemeral Session/Job
-  registries, bounded concurrency, cancellation, temporary results, and
-  shutdown.
+  registries, bounded Sessions/Jobs/active handlers, runtime handler reaping,
+  cancellation, temporary results, and shutdown.
 - The daemon depends only on an isolated installed public Photospider package.
 - It has no private kernel include, copied compiler/planner implementation,
   internal-IR wire encoding, plugin-path route, or reverse dependency.
@@ -60,6 +60,11 @@ The daemon configure must fail if it can see only a source checkout or private
 kernel headers. Tests use the public compile/execute/Value facade exported by
 the installed package.
 
+The executable accepts positive `--max-sessions`, `--max-jobs`,
+`--max-concurrency`, and `--max-connections` bounds. Capacity rejection is a
+typed `ResourceExhausted` response and creates no Session, Job, or handler
+state.
+
 ## Installed client
 
 ```cmake
@@ -67,8 +72,10 @@ find_package(PhotospiderDaemon 0.2 CONFIG REQUIRED COMPONENTS client)
 target_link_libraries(app PRIVATE PhotospiderDaemon::client)
 ```
 
-The package exports only the typed client. Codec, router, registry, transport,
-and server implementation remain private.
+The package exports only the typed client target. It also installs the
+`photospiderd` runtime under `bin/`, but no executable/server CMake target is
+exported. Codec, router, registry, transport, and server implementation remain
+private.
 
 ## Correctness boundary
 
@@ -78,6 +85,13 @@ result type/shape/Region/layout, cancellation publication,
 descriptor/thread cleanup, and socket lifecycle. Unix peer-uid and mode-0600
 checks establish the documented same-user local boundary; they do not create a
 tenant or remote-service product.
+
+Malformed or oversized frames receive one typed protocol-error response and
+then the connection closes. A recoverable valid v3 header keeps its request id
+and method; otherwise the documented correlation sentinel is request id zero
+with method `daemon.info`. See
+[Testing and Validation](docs/development/Testing-and-Validation.md) for
+sanitizer and manual fuzz commands.
 
 The pre-reset IPC v2 source is available only through Git history and
 `pre-breaking-scope-reset-2026-09-01`; it is not an active compatibility

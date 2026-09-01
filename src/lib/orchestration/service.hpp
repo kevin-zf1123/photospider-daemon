@@ -17,6 +17,8 @@ struct ServiceConfig final {
   std::uint32_t maximum_concurrency = 1U;
   /** @brief Maximum retained queued/running/terminal records. */
   std::uint32_t maximum_jobs = 1024U;
+  /** @brief Maximum simultaneously retained logical namespaces. */
+  std::uint32_t maximum_sessions = 128U;
   /** @brief Whether the optional local kernel GPU lane is configured. */
   bool gpu_enabled = false;
 };
@@ -44,8 +46,21 @@ class Service final {
    */
   ~Service() noexcept;
 
-  Service(const Service&) = delete;
-  Service& operator=(const Service&) = delete;
+  /**
+   * @brief Forbids copying worker and registry ownership.
+   * @param other Source service that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   * @note Construct a separate empty service for independent lifecycle state.
+   */
+  Service(const Service& other) = delete;
+  /**
+   * @brief Forbids assigning active orchestration ownership.
+   * @param other Source service that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   * @note Session, Job, worker, and result lifetimes never transfer.
+   */
+  Service& operator=(const Service& other) = delete;
 
   /**
    * @brief Routes one already decoded request through the exact nine methods.

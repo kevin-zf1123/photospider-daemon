@@ -57,6 +57,29 @@ int main() {
   PS_IPC_CHECK(decoded.value().document.nodes.size() == 2U);
   PS_IPC_CHECK(decoded.value().document.outputs.front().name == "value");
 
+  const Status malformed_status =
+      Status::failure(ErrorCode::InvalidArgument, "malformed request fixture");
+  auto correlated_protocol_error =
+      encode_protocol_error(malformed_status, &encoded.value());
+  PS_IPC_CHECK(correlated_protocol_error.ok());
+  auto decoded_correlated_protocol_error =
+      decode_protocol_error(correlated_protocol_error.value());
+  PS_IPC_CHECK(decoded_correlated_protocol_error.ok());
+  PS_IPC_CHECK(decoded_correlated_protocol_error.value().request_id == 7U);
+  PS_IPC_CHECK(decoded_correlated_protocol_error.value().method ==
+               Method::SessionCreate);
+  PS_IPC_CHECK(decoded_correlated_protocol_error.value().status.code ==
+               ErrorCode::InvalidArgument);
+  auto sentinel_protocol_error = encode_protocol_error(malformed_status);
+  PS_IPC_CHECK(sentinel_protocol_error.ok());
+  auto decoded_sentinel_protocol_error =
+      decode_protocol_error(sentinel_protocol_error.value());
+  PS_IPC_CHECK(decoded_sentinel_protocol_error.ok());
+  PS_IPC_CHECK(decoded_sentinel_protocol_error.value().request_id == 0U);
+  PS_IPC_CHECK(decoded_sentinel_protocol_error.value().method ==
+               Method::DaemonInfo);
+  PS_IPC_CHECK(!encode_protocol_error(Status::success()).ok());
+
   Response response;
   response.request_id = 9U;
   response.method = Method::JobResult;

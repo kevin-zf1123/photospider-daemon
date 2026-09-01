@@ -9,7 +9,11 @@
 
 namespace {
 
-/** @brief Complete parsed local daemon command-line configuration. */
+/**
+ * @brief Complete parsed local daemon command-line configuration.
+ * @note Every numeric field is positive before server construction; bounds are
+ * process-global local controls, not tenant policy.
+ */
 struct Options final {
   /** @brief Explicit Unix-domain socket path. */
   std::string socket_path;
@@ -17,6 +21,10 @@ struct Options final {
   std::uint32_t maximum_concurrency = 1U;
   /** @brief Fixed retained execution bound. */
   std::uint32_t maximum_jobs = 1024U;
+  /** @brief Fixed retained logical namespace bound. */
+  std::uint32_t maximum_sessions = 128U;
+  /** @brief Fixed active local connection-handler bound. */
+  std::uint32_t maximum_connections = 64U;
   /** @brief Whether the optional local GPU lane is configured. */
   bool gpu_enabled = false;
   /** @brief Whether help was requested. */
@@ -37,6 +45,8 @@ void print_help() {
       << "  --max-concurrency N    Global execution worker count (default 1)\n"
       << "  --max-jobs N           Retained ephemeral execution bound (default "
          "1024)\n"
+      << "  --max-sessions N       Retained Session bound (default 128)\n"
+      << "  --max-connections N    Active connection bound (default 64)\n"
       << "  --gpu                   Enable the optional local GPU lane\n"
       << "  --help                  Show this help\n";
 }
@@ -49,7 +59,7 @@ void print_help() {
  * @throws std::invalid_argument If syntax/range is invalid.
  * @throws std::out_of_range If decimal conversion exceeds uint64.
  * @throws std::bad_alloc If conversion/diagnostic allocation fails.
- * @note Zero is rejected for both maintained resource bounds.
+ * @note Zero is rejected for every maintained resource bound.
  */
 std::uint32_t positive_uint32(const std::string& text,
                               const std::string& option) {
@@ -81,7 +91,8 @@ Options parse_options(int argc, char** argv) {
     } else if (argument == "--gpu") {
       options.gpu_enabled = true;
     } else if (argument == "--socket" || argument == "--max-concurrency" ||
-               argument == "--max-jobs") {
+               argument == "--max-jobs" || argument == "--max-sessions" ||
+               argument == "--max-connections") {
       if (index + 1 >= argc) {
         throw std::invalid_argument(argument + " requires a value");
       }
@@ -90,8 +101,12 @@ Options parse_options(int argc, char** argv) {
         options.socket_path = value;
       } else if (argument == "--max-concurrency") {
         options.maximum_concurrency = positive_uint32(value, argument);
-      } else {
+      } else if (argument == "--max-jobs") {
         options.maximum_jobs = positive_uint32(value, argument);
+      } else if (argument == "--max-sessions") {
+        options.maximum_sessions = positive_uint32(value, argument);
+      } else {
+        options.maximum_connections = positive_uint32(value, argument);
       }
     } else {
       throw std::invalid_argument("unknown option: " + argument);
@@ -124,10 +139,12 @@ int main(int argc, char** argv) {
     }
     ps::ipc::internal::Server server(ps::ipc::internal::ServerConfig{
         options.socket_path,
-        ps::ipc::internal::ServiceConfig{options.maximum_concurrency,
-                                         options.maximum_jobs,
-                                         options.gpu_enabled},
-        32});
+        ps::ipc::internal::ServiceConfig{
+            options.maximum_concurrency, options.maximum_jobs,
+            options.maximum_sessions, options.gpu_enabled},
+        32,
+        options.maximum_connections,
+        {}});
     const ps::Status status = server.run();
     if (!status.ok()) {
       std::cerr << status.message << '\n';

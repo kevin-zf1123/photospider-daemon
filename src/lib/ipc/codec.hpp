@@ -110,6 +110,30 @@ struct Response final {
     std::uint64_t expected_request_id);
 
 /**
+ * @brief Encodes one typed protocol/backpressure error before normal routing.
+ * @param status Required non-success status.
+ * @param request_payload Optional malformed request payload used only to
+ * recover a valid correlation header.
+ * @return Bounded error response using recovered correlation or the documented
+ * sentinel `request_id=0`, `method=daemon.info`.
+ * @throws std::bad_alloc If response allocation fails.
+ * @note No successful method payload or service mutation is encoded.
+ */
+[[nodiscard]] Result<std::vector<std::uint8_t>> encode_protocol_error(
+    const Status& status,
+    const std::vector<std::uint8_t>* request_payload = nullptr);
+
+/**
+ * @brief Decodes a server-generated typed pre-routing protocol error.
+ * @param payload Complete bounded response payload.
+ * @return Failed Response with recovered or sentinel correlation.
+ * @throws std::bad_alloc If diagnostic allocation fails.
+ * @note Success responses and malformed sentinel combinations are rejected.
+ */
+[[nodiscard]] Result<Response> decode_protocol_error(
+    const std::vector<std::uint8_t>& payload);
+
+/**
  * @brief Returns the canonical dotted wire name of one method.
  * @param method Closed version-three method code.
  * @return Process-lifetime string literal, or `unknown` for invalid input.

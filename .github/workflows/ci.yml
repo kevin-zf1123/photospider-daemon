@@ -46,3 +46,52 @@ jobs:
         run: >-
           ctest --test-dir build --output-on-failure
           --output-junit daemon-ctest.xml
+
+  sanitizers:
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [ASAN, TSAN]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v6
+      - name: Select matching kernel branch
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone https://github.com/kevin-zf1123/photospider.git "$RUNNER_TEMP/kernel"
+          if git -C "$RUNNER_TEMP/kernel" ls-remote --exit-code --heads origin "$branch"; then
+            git -C "$RUNNER_TEMP/kernel" checkout --detach "origin/$branch"
+          else
+            git -C "$RUNNER_TEMP/kernel" checkout --detach origin/main
+          fi
+      - name: Build isolated kernel package
+        shell: bash
+        run: |
+          option="PHOTOSPIDER_ENABLE_${{ matrix.sanitizer }}"
+          cmake -S "$RUNNER_TEMP/kernel" -B "$RUNNER_TEMP/kernel-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/kernel-prefix" \
+            -DBUILD_TESTING=OFF \
+            -D"$option"=ON
+          cmake --build "$RUNNER_TEMP/kernel-build" --parallel
+          cmake --install "$RUNNER_TEMP/kernel-build"
+      - name: Configure daemon sanitizer
+        shell: bash
+        run: |
+          option="PHOTOSPIDER_DAEMON_ENABLE_${{ matrix.sanitizer }}"
+          cmake -S . -B "build-${{ matrix.sanitizer }}" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/kernel-prefix" \
+            -DBUILD_TESTING=ON \
+            -D"$option"=ON
+      - name: Build focused sanitizer targets
+        run: >-
+          cmake --build build-${{ matrix.sanitizer }} --parallel
+          --target test_ipc_codec test_local_daemon
+      - name: Run focused sanitizer tests
+        run: >-
+          ctest --test-dir build-${{ matrix.sanitizer }} --output-on-failure
+          -R 'test_(ipc_codec|local_daemon)$'

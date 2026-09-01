@@ -34,7 +34,9 @@ payload_size bytes of typed binary payload
 
 `payload_size` is `1..4,194,304`. Reads and writes handle partial progress and
 `EINTR`; sends suppress `SIGPIPE` where the platform supports it. Zero,
-oversized, truncated, or trailing bytes reject the complete message.
+oversized, truncated, or trailing bytes reject the complete message. The
+server sends one bounded typed failure before controlled close and never
+allocates from the attacker-declared frame length.
 
 Inside the payload, integers are little-endian. Text and byte vectors use a
 little-endian uint32 byte count followed by exact bytes. Text is canonical
@@ -58,6 +60,13 @@ by a uint8 public kernel `ErrorCode` and a uint32-length UTF-8 diagnostic of at
 most 4,096 bytes. A success then carries method-specific fields. The client
 requires exact version/method/id correlation and invalidates its connection on
 transport or response-codec failure. It never automatically retries.
+
+Protocol-error correlation is recovered only when the received payload begins
+with a complete valid v3 version, nonzero request id, and known method. When it
+cannot be recovered (including length-prefix rejection, truncation, unknown
+version/method, or an incomplete header), the failed response uses the sole
+sentinel `request_id=0`, `method=daemon.info`. A normal request and a successful
+response may never use that sentinel.
 
 ## Ephemeral identifiers
 
@@ -96,7 +105,9 @@ visible after failure.
 
 The request contains one complete WorkflowDocument. Success returns a fresh
 `SessionId`. A Session is only a logical namespace retaining one immutable
-kernel `GraphContext`.
+kernel `GraphContext`. The positive process-global `maximum_sessions` bound is
+checked before graph/compiler allocation, publication, or id consumption. A
+full registry returns `ResourceExhausted` and creates nothing.
 
 ### `session.close`
 
@@ -148,13 +159,20 @@ A caller retries only by `job.submit`, which creates a distinct identifier.
 
 `daemon.info` returns protocol version, non-security process instance token,
 package version, `unix-domain` transport, exact sorted method list, live
-Session/Job counts, and fixed global concurrency.
+Session/Job counts, fixed global concurrency, and the fixed retained-Session
+bound.
 
 `daemon.shutdown` acknowledges, stops the listener, interrupts active client
 connections, and lets `photospiderd` destroy the service. Service destruction
 requests cancellation, joins fixed workers, and releases every Session, Job,
 result, GraphContext, kernel execution resource, descriptor, and socket node.
 The next process starts with empty registries.
+
+The server also enforces one positive global active-connection/handler bound.
+An excess connection receives a sentinel `ResourceExhausted` protocol error
+and closes without starting a thread. Accepted handler threads remain
+joinable; the accept loop reaps completed threads during normal operation and
+shutdown joins every remainder. No handler is detached.
 
 ## Correctness invariants
 

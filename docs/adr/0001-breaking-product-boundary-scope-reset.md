@@ -49,6 +49,11 @@ public API. `session.close` rejects new submission, cancels unfinished Jobs,
 waits for their bounded cleanup, releases all temporary results, and destroys
 the context. Daemon restart clears every Session.
 
+Session retention has one positive process-global `maximum_sessions` bound.
+Admission checks capacity before constructing a graph/compiler or consuming an
+identifier; a full registry returns `ResourceExhausted`. Close releases exactly
+one slot, so later creation can reuse capacity without reusing an identifier.
+
 ### Ephemeral Jobs
 
 Every accepted submit receives a fresh opaque `JobId`. The exact state machine
@@ -92,6 +97,12 @@ The wire carries `WorkflowDocument` input and public execution options/results.
 It never carries semantic IR, optimized IR, execution-plan internals, plugin
 paths, DSO handles, device handles, cache internals, or kernel object pointers.
 
+Every malformed or oversized frame receives at most one typed error response
+before controlled connection close. If a complete valid v3 header can be
+recovered, the response preserves its request id and method. Otherwise it uses
+the explicit sentinel `request_id=0`, `method=daemon.info`; this sentinel is
+valid only for a failed protocol-error response.
+
 ### Result lifetime
 
 A successful Job owns an in-memory public kernel result until `job.release`,
@@ -106,6 +117,12 @@ or recovery behavior.
 blocked local connections, joins owned threads, releases results and Sessions,
 removes only the verified socket path, and exits. Signal shutdown uses the
 same cleanup path. Process restart begins with empty registries.
+
+Connection handling has one positive process-global active-handler bound.
+Admission beyond that bound returns `ResourceExhausted` and closes without
+starting a thread. Handler threads remain joinable; the accept loop joins and
+erases completed records while the server is running, and shutdown joins every
+remainder. No handler is detached.
 
 ### Correctness validation retained
 

@@ -17,6 +17,22 @@ if(NOT _install_result EQUAL 0)
   message(FATAL_ERROR "PhotospiderDaemon isolated install failed")
 endif()
 
+set(_targets_file
+    "${_install_prefix}/lib/cmake/PhotospiderDaemon/PhotospiderDaemonTargets.cmake")
+if(NOT EXISTS "${_targets_file}")
+  message(FATAL_ERROR "PhotospiderDaemon exported target file is missing")
+endif()
+file(READ "${_targets_file}" _targets_content)
+if(NOT _targets_content MATCHES "PhotospiderDaemon::client")
+  message(FATAL_ERROR "PhotospiderDaemon::client is not exported")
+endif()
+if(_targets_content MATCHES "PhotospiderDaemon::photospiderd")
+  message(FATAL_ERROR "photospiderd executable leaked into package exports")
+endif()
+if(NOT EXISTS "${_install_prefix}/bin/photospiderd")
+  message(FATAL_ERROR "installed photospiderd runtime is missing")
+endif()
+
 execute_process(
   COMMAND "${CMAKE_COMMAND}"
           -S "${PHOTOSPIDER_DAEMON_SOURCE_DIR}/tests/consumer"

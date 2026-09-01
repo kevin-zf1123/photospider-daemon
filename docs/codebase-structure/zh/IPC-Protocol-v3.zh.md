@@ -34,7 +34,8 @@ payload_size bytes typed binary payload
 
 `payload_size` 范围为 `1..4,194,304`。read/write 处理 partial progress 与 `EINTR`；
 平台支持时 send 抑制 `SIGPIPE`。zero、oversized、truncated 或 trailing bytes 会使
-完整 message 被拒绝。
+完整 message 被拒绝。Server 在受控 close 前发送一个 bounded typed failure，且绝不
+根据攻击者声明的 frame length 分配内存。
 
 Payload 内 integer 使用 little-endian。Text/byte vector 使用 little-endian uint32
 byte count，随后是精确 bytes。Text 必须是 canonical UTF-8，并遵守 field-specific
@@ -56,6 +57,12 @@ Response 使用相同 version、request id、method code，随后是 uint8 publi
 `ErrorCode` 与最多 4,096 bytes 的 uint32-length UTF-8 diagnostic。成功时再携带
 method-specific field。Client 要求 exact version/method/id correlation，并在
 transport/response-codec failure 后失效 connection；它绝不自动 retry。
+
+只有 received payload 以完整合法的 v3 version、nonzero request id 与 known method
+开头时，才能恢复 protocol-error correlation。无法恢复时（包括 length-prefix rejection、
+truncation、unknown version/method 或 incomplete header），failed response 使用唯一
+sentinel `request_id=0`、`method=daemon.info`。普通 request 与 successful response
+绝不能使用该 sentinel。
 
 ## Ephemeral identifier
 
@@ -91,7 +98,9 @@ bounds/type/shape/Region/layout/facet validation 重新发布每个 Value；失�
 ### `session.create`
 
 Request 包含一个完整 WorkflowDocument。成功返回 fresh `SessionId`。Session 只是
-保留一个 immutable kernel `GraphContext` 的 logical namespace。
+保留一个 immutable kernel `GraphContext` 的 logical namespace。正值、进程全局的
+`maximum_sessions` bound 会在 graph/compiler allocation、publication 或 id consumption
+前检查。Registry 满时返回 `ResourceExhausted`，且不创建任何状态。
 
 ### `session.close`
 
@@ -140,12 +149,17 @@ Caller 只能通过 `job.submit` retry，并获得 distinct identifier。
 
 `daemon.info` 返回 protocol version、non-security process instance token、package
 version、`unix-domain` transport、exact sorted method list、live Session/Job count 与
-fixed global concurrency。
+fixed global concurrency，以及 fixed retained-Session bound。
 
 `daemon.shutdown` 先 ack，再停止 listener、interrupt active client connection，并让
 `photospiderd` 销毁 service。Service destruction 请求 cancellation、join fixed worker，
 并释放全部 Session、Job、result、GraphContext、kernel execution resource、descriptor
 与 socket node。下一个 process 从 empty registry 开始。
+
+Server 还强制执行一个正值、全局 active-connection/handler bound。Excess connection
+收到 sentinel `ResourceExhausted` protocol error，并在不启动 thread 的情况下关闭。
+Accepted handler thread 保持 joinable；accept loop 在正常运行期 reap completed thread，
+shutdown join 每个剩余 thread。不存在 detached handler。
 
 ## Correctness invariant
 

@@ -28,8 +28,21 @@ class Client final {
    */
   ~Client() noexcept;
 
-  Client(const Client&) = delete;
-  Client& operator=(const Client&) = delete;
+  /**
+   * @brief Forbids duplicating one sequential connection/request sequence.
+   * @param other Source client that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   * @note Use a distinct Client for another concurrent connection.
+   */
+  Client(const Client& other) = delete;
+  /**
+   * @brief Forbids copy assignment of descriptor/request ownership.
+   * @param other Source client that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   * @note Move assignment is the only ownership-transfer operation.
+   */
+  Client& operator=(const Client& other) = delete;
 
   /**
    * @brief Transfers local connection ownership and request sequence.

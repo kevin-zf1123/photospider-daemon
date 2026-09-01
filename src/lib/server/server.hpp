@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -7,7 +10,11 @@
 
 namespace ps::ipc::internal {
 
-/** @brief Fixed local server transport and orchestration configuration. */
+/**
+ * @brief Fixed local server transport and orchestration configuration.
+ * @note Connection and service bounds are positive process-global local
+ * controls, not tenant quotas or remote admission policy.
+ */
 struct ServerConfig final {
   /** @brief Explicit Unix-domain socket filesystem path. */
   std::string socket_path;
@@ -15,6 +22,17 @@ struct ServerConfig final {
   ServiceConfig service;
   /** @brief Positive pending local connection bound. */
   int listen_backlog = 32;
+  /** @brief Positive global active connection/handler bound. */
+  std::uint32_t maximum_active_connections = 64U;
+  /**
+   * @brief Optional private handler-entry observer/fault-injection callback.
+   *
+   * The callback runs after descriptor registration and before frame reads.
+   * It must be thread-safe when multiple handlers enter concurrently.
+   * Exceptions are fenced into one typed connection failure and cleanup.
+   * Production callers normally leave it empty.
+   */
+  std::function<void()> handler_entry_hook;
 };
 
 /**
@@ -43,8 +61,21 @@ class Server final {
    */
   ~Server() noexcept;
 
-  Server(const Server&) = delete;
-  Server& operator=(const Server&) = delete;
+  /**
+   * @brief Forbids copying listener, handler, and service ownership.
+   * @param other Source server that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   * @note One bound socket path has exactly one owning server.
+   */
+  Server(const Server& other) = delete;
+  /**
+   * @brief Forbids assigning active listener/handler ownership.
+   * @param other Source server that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   * @note Shutdown and join remain bound to the constructing object.
+   */
+  Server& operator=(const Server& other) = delete;
 
   /**
    * @brief Accepts same-user connections until shutdown.
@@ -52,7 +83,9 @@ class Server final {
    * failure.
    * @throws std::bad_alloc If handler ownership allocation fails.
    * @throws std::system_error If a connection handler cannot be started.
-   * @note Call exactly once from one thread.
+   * @note Call exactly once from one thread. Handler-creation failure stops
+   * admission, joins every already-owned handler, removes the socket node, and
+   * then propagates.
    */
   [[nodiscard]] Status run();
 
@@ -71,6 +104,23 @@ class Server final {
    * @note The reference remains valid for the server object's lifetime.
    */
   [[nodiscard]] const std::string& socket_path() const noexcept;
+
+  /**
+   * @brief Returns the current active connection-handler count.
+   * @return Exact atomic count at the observation instant.
+   * @throws Nothing.
+   * @note The value may change immediately after return and exists for
+   * lifecycle diagnostics/tests, not public package transport control.
+   */
+  [[nodiscard]] std::uint32_t active_handler_count() const noexcept;
+
+  /**
+   * @brief Returns handler thread records still owned before runtime reaping.
+   * @return Current bounded retained record count.
+   * @throws Nothing.
+   * @note Finished records are joined and erased by the accept loop.
+   */
+  [[nodiscard]] std::size_t retained_handler_count() const noexcept;
 
  private:
   /** @brief Opaque listener, connection handlers, and service. */

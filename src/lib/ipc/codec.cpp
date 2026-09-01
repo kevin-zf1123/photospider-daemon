@@ -534,7 +534,8 @@ void validate_job_status(const JobStatus& status) {
 void validate_daemon_info(const DaemonInfo& info) {
   if (info.protocol_version != kProtocolVersion || info.instance_id == 0U ||
       info.service_version.empty() || info.transport != "unix-domain" ||
-      info.maximum_concurrency == 0U || info.methods != method_inventory()) {
+      info.maximum_concurrency == 0U || info.maximum_sessions == 0U ||
+      info.methods != method_inventory()) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire daemon.info payload is inconsistent");
   }
@@ -1043,6 +1044,47 @@ Result<T> codec_failure_result(const CodecFailure& failure) {
   return Result<T>(Status::failure(failure.code(), failure.what()));
 }
 
+/**
+ * @brief Correlation recovered without trusting a malformed request body.
+ * @note The default pair is the sole failed-response sentinel and is never a
+ * valid request or successful response identity.
+ */
+struct RecoveredCorrelation final {
+  /** @brief Valid nonzero request id, or sentinel zero. */
+  std::uint64_t request_id = 0U;
+  /** @brief Valid request method, or sentinel daemon.info. */
+  Method method = Method::DaemonInfo;
+};
+
+/**
+ * @brief Recovers only the fixed valid v3 request header from malformed bytes.
+ * @param payload Candidate request payload.
+ * @return Valid correlation or the documented zero/daemon.info sentinel.
+ * @throws Nothing.
+ * @note The function reads at most eleven bytes and never allocates.
+ */
+RecoveredCorrelation recover_correlation(
+    const std::vector<std::uint8_t>* payload) noexcept {
+  RecoveredCorrelation correlation;
+  if (!payload || payload->size() < 11U ||
+      ((*payload)[0] | (static_cast<std::uint16_t>((*payload)[1]) << 8U)) !=
+          kProtocolVersion) {
+    return correlation;
+  }
+  std::uint64_t request_id = 0U;
+  for (std::size_t index = 0U; index < 8U; ++index) {
+    request_id |= static_cast<std::uint64_t>((*payload)[index + 2U])
+                  << (index * 8U);
+  }
+  const auto method = static_cast<Method>((*payload)[10U]);
+  if (request_id == 0U || !valid_method(method)) {
+    return correlation;
+  }
+  correlation.request_id = request_id;
+  correlation.method = method;
+  return correlation;
+}
+
 }  // namespace
 
 /**
@@ -1206,6 +1248,7 @@ Result<std::vector<std::uint8_t>> encode_response(const Response& response) {
           encoder.u64(response.daemon_info.active_sessions);
           encoder.u64(response.daemon_info.active_jobs);
           encoder.u32(response.daemon_info.maximum_concurrency);
+          encoder.u32(response.daemon_info.maximum_sessions);
           break;
         case Method::SessionClose:
         case Method::JobCancel:
@@ -1287,6 +1330,7 @@ Result<Response> decode_response(const std::vector<std::uint8_t>& payload,
           response.daemon_info.active_sessions = decoder.u64();
           response.daemon_info.active_jobs = decoder.u64();
           response.daemon_info.maximum_concurrency = decoder.u32();
+          response.daemon_info.maximum_sessions = decoder.u32();
           validate_daemon_info(response.daemon_info);
           break;
         }
@@ -1304,6 +1348,59 @@ Result<Response> decode_response(const std::vector<std::uint8_t>& payload,
   } catch (const std::invalid_argument& failure) {
     return Result<Response>(
         Status::failure(ErrorCode::InvalidArgument, failure.what()));
+  }
+}
+
+/**
+ * @brief Implements pre-routing typed error response encoding.
+ * @copydetails encode_protocol_error
+ */
+Result<std::vector<std::uint8_t>> encode_protocol_error(
+    const Status& status, const std::vector<std::uint8_t>* request_payload) {
+  try {
+    if (status.ok()) {
+      throw CodecFailure(ErrorCode::InvalidArgument,
+                         "protocol error response cannot carry success");
+    }
+    const RecoveredCorrelation correlation =
+        recover_correlation(request_payload);
+    Encoder encoder;
+    encoder.u16(kProtocolVersion);
+    encoder.u64(correlation.request_id);
+    encoder.u8(static_cast<std::uint8_t>(correlation.method));
+    encode_status(&encoder, status);
+    return Result<std::vector<std::uint8_t>>(encoder.finish());
+  } catch (const CodecFailure& failure) {
+    return codec_failure_result<std::vector<std::uint8_t>>(failure);
+  }
+}
+
+/**
+ * @brief Implements pre-routing typed error response decoding.
+ * @copydetails decode_protocol_error
+ */
+Result<Response> decode_protocol_error(
+    const std::vector<std::uint8_t>& payload) {
+  try {
+    Decoder decoder(payload);
+    if (decoder.u16() != kProtocolVersion) {
+      throw CodecFailure(ErrorCode::InvalidArgument,
+                         "protocol error response version is not three");
+    }
+    Response response;
+    response.request_id = decoder.u64();
+    response.method = decode_method(decoder.u8());
+    response.status = decode_status(&decoder);
+    decoder.require_end();
+    if (response.status.ok() ||
+        (response.request_id == 0U && response.method != Method::DaemonInfo)) {
+      throw CodecFailure(
+          ErrorCode::InvalidArgument,
+          "protocol error response status or sentinel is invalid");
+    }
+    return Result<Response>(std::move(response));
+  } catch (const CodecFailure& failure) {
+    return codec_failure_result<Response>(failure);
   }
 }
 

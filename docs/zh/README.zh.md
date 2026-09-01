@@ -8,7 +8,8 @@
 
 - `PhotospiderDaemon::client` 是安装的 typed local-IPC client。
 - `photospiderd` 拥有受保护 local socket、临时 Session/Job registry、bounded
-  concurrency、cancellation、temporary result 与 shutdown。
+  Session/Job/active handler、运行期 handler reaping、cancellation、temporary
+  result 与 shutdown。
 - Daemon 只依赖隔离安装的公开 Photospider package。
 - 它没有 private kernel include、copied compiler/planner implementation、内部 IR
   wire encoding、plugin-path route 或反向依赖。
@@ -57,6 +58,10 @@ cmake --install build --prefix /absolute/daemon-prefix
 若只能看到 source checkout 或 private kernel header，daemon configure 必须失败。
 Test 使用 installed package 导出的公开 compile/execute/Value facade。
 
+Executable 接受正值 `--max-sessions`、`--max-jobs`、`--max-concurrency` 与
+`--max-connections` bound。容量拒绝返回 typed `ResourceExhausted`，且不创建
+Session、Job 或 handler state。
+
 ## Installed client
 
 ```cmake
@@ -64,8 +69,9 @@ find_package(PhotospiderDaemon 0.2 CONFIG REQUIRED COMPONENTS client)
 target_link_libraries(app PRIVATE PhotospiderDaemon::client)
 ```
 
-Package 只 export typed client。Codec、router、registry、transport 与 server
-implementation 保持 private。
+Package 只 export typed client target。它也把 `photospiderd` runtime 安装到 `bin/`，
+但不 export executable/server CMake target。Codec、router、registry、transport 与
+server implementation 保持 private。
 
 ## Correctness 边界
 
@@ -74,6 +80,11 @@ instance-scoped opaque id、Job transition、公开 kernel result
 type/shape/Region/layout、cancellation publication、descriptor/thread cleanup 与 socket
 lifecycle。Unix peer-uid 与 mode-0600 check 建立文档规定的 same-user local boundary；
 它们不会形成 tenant 或 remote-service product。
+
+Malformed 或 oversized frame 会收到一个 typed protocol-error response，随后 connection
+关闭。若存在可恢复的合法 v3 header，则保留其 request id 与 method；否则使用文档化
+correlation sentinel：request id 为零且 method 为 `daemon.info`。Sanitizer 与手动 fuzz
+命令见[测试与验证](../development/zh/Testing-and-Validation.zh.md)。
 
 重置前 IPC v2 source 只能从 Git 历史和 `pre-breaking-scope-reset-2026-09-01`
 取得；它不是 active compatibility contract。
