@@ -6,8 +6,9 @@ product boundary.
 ## Scope and methods
 
 IPC v3 is a same-user, same-machine, non-persistent orchestration protocol.
-Darwin and Linux use a mode-0600 Unix-domain stream socket and verify the peer
-effective uid. The exact sorted method inventory is:
+Darwin and Linux use a Unix-domain stream socket and verify the peer effective
+uid. Socket-node mode is not an authentication boundary; callers select a
+suitably private parent directory. The exact sorted method inventory is:
 
 1. `daemon.info`
 2. `daemon.shutdown`
@@ -36,7 +37,10 @@ payload_size bytes of typed binary payload
 `EINTR`. Linux sends use `MSG_NOSIGNAL`. Darwin configures `SO_NOSIGPIPE` on
 each client stream before connect and on each accepted stream before peer
 validation; configuration failure closes the descriptor and returns a typed
-transport failure. No process-global `SIGPIPE` disposition is changed. Zero,
+transport failure. No process-global `SIGPIPE` disposition is changed. With
+`SIGPIPE` explicitly restored to `SIG_DFL`, a peer-close write through either
+product-prepared endpoint returns typed transport failure and the process exits
+normally rather than by signal. Zero,
 oversized, truncated, or trailing bytes reject the complete message. The
 server sends one bounded typed failure before controlled close and never
 allocates from the attacker-declared frame length. The reader retains at most
@@ -198,13 +202,23 @@ automatic unlink, crash recovery, or lock-file recovery. Concurrent attempts
 that both observe absence rely on the atomic Unix `bind` result to select one
 owner.
 
-After bind, the listener records the fixed parent directory and the exact
-parent/socket `st_dev` and `st_ino` values. Construction rollback, normal
-shutdown, signal shutdown, and destruction use the same move-only guard.
-Cleanup first revalidates the fixed parent descriptor, the parent pathname, the
-socket type, and both generations; mismatch, replacement, or an inconclusive
-system call preserves the current path. A normal matching cleanup removes the
-node and permits a clean restart. Portable POSIX has no conditional
+Before bind, the listener moves every allocation-backed parent path, leaf, and
+fixed-directory capability into an inactive guard. After bind and before arm,
+it performs only non-allocating system observations to capture the exact
+parent/socket `st_dev` and `st_ino` values. The guard state is
+`Empty -> Prepared -> Armed -> Consumed`: a capture failure abandons the
+unverified `Prepared` state and preserves the current path; a successful
+capture arms exact-generation cleanup. Construction rollback, normal shutdown,
+signal shutdown, and destruction use this same move-only guard. Cleanup first
+revalidates the fixed parent descriptor, the parent pathname, the socket type,
+and both generations; mismatch or replacement preserves the current path. A
+normal matching cleanup removes the node and permits a clean restart.
+
+Listener setup performs no post-bind pathname `chmod`. The socket node's
+ambient mode follows the caller's directory and process umask, is not an
+authentication boundary, and is never used to authorize a peer. Peer
+credentials remain the same-user acceptance check, and the host rejects a
+non-owner peer. Portable POSIX has no conditional
 compare-and-unlink primitive: the final `fstatat` and `unlinkat` calls are
 separate, and the implementation does not claim protection from a hostile
 same-uid writer racing exactly between them.
@@ -219,11 +233,13 @@ same-uid writer racing exactly between them.
 - Worker/callback exceptions are fenced into one Job failure.
 - Descriptor, worker, GraphContext, result, and queue ownership settles exactly
   once.
-- Listener construction prepares allocation-backed path/configuration state
-  before bind and retains descriptor/socket-node rollback guards until complete
-  private-state publication. It rejects every existing entry without recovery;
-  an identity-matched injected failure leaves the exact path immediately
-  rebindable, while a replacement generation is preserved.
+- Listener construction prepares allocation-backed path/leaf/guard state before
+  bind, performs no allocating or throwing C++ operation between successful
+  bind and generation arm, and retains descriptor/socket-node rollback guards
+  until complete private-state publication. A pre-arm allocation failure creates
+  no node and leaves the exact path immediately rebindable. Inconclusive capture
+  preserves the path; exact-generation cleanup never removes or changes a
+  replacement, including its mode.
 - Daemon production build and package consumer use only an isolated installed
   `Photospider::kernel` target.
 

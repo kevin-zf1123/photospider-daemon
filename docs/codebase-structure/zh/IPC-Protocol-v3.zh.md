@@ -6,8 +6,9 @@ boundary。
 ## 范围与方法
 
 IPC v3 是 same-user、same-machine、non-persistent orchestration protocol。Darwin
-与 Linux 使用 mode-0600 Unix-domain stream socket，并验证 peer effective uid。
-精确 sorted method inventory 为：
+与 Linux 使用 Unix-domain stream socket，并验证 peer effective uid。Socket-node
+mode 不是 authentication boundary；调用者选择适当私有的 parent directory。精确
+sorted method inventory 为：
 
 1. `daemon.info`
 2. `daemon.shutdown`
@@ -35,7 +36,9 @@ payload_size bytes typed binary payload
 `payload_size` 范围为 `1..4,194,304`。read/write 处理 partial progress 与 `EINTR`。
 Linux send 使用 `MSG_NOSIGNAL`。Darwin 在 connect 前为每个 client stream、在 peer
 validation 前为每个 accepted stream 配置 `SO_NOSIGPIPE`；配置失败会关闭 descriptor
-并返回 typed transport failure。进程级 `SIGPIPE` disposition 不会被修改。zero、
+并返回 typed transport failure。进程级 `SIGPIPE` disposition 不会被修改。即使显式把
+`SIGPIPE` 恢复为 `SIG_DFL`，通过任一 product-prepared endpoint 在 peer close 后 write
+也会返回 typed transport failure，进程正常退出而不是被 signal 终止。zero、
 oversized、truncated 或 trailing bytes 会使完整 message 被拒绝。Server 在受控 close
 前发送一个 bounded typed failure，且绝不根据攻击者声明的 frame length 分配内存。
 Reader 最多保留固定十一字节 request header 用于 correlation，并只随实际到达的 byte
@@ -179,12 +182,20 @@ symlink 或任何其他已有 directory entry 都会产生 typed startup failure
 Daemon 不执行 stale-node probe、automatic unlink、crash recovery 或 lock-file recovery。
 若并发 attempt 都观察到 path 不存在，则依靠 Unix 原子 `bind` result 选出唯一 owner。
 
-Bind 后 listener 记录固定 parent directory 以及 parent/socket 的精确 `st_dev` 与
-`st_ino`。Construction rollback、normal shutdown、signal shutdown 与 destruction
-共享同一个 move-only guard。Cleanup 先重新验证固定 parent descriptor、parent
-pathname、socket type 与两组 generation；mismatch、replacement 或无法确认的 system
-call 都会保留当前 path。正常匹配的 cleanup 会移除 node 并允许 clean restart。
-Portable POSIX 没有 conditional compare-and-unlink primitive：最终 `fstatat` 与
+Bind 前，listener 把所有 allocation-backed parent path、leaf 与 fixed-directory
+capability 移入 inactive guard。Bind 后至 arm 前，只执行不分配的 system observation，
+以捕获 parent/socket 的精确 `st_dev` 与 `st_ino`。Guard 状态为
+`Empty -> Prepared -> Armed -> Consumed`：capture failure 会放弃未经验证的
+`Prepared` state 并保留当前 path；capture 成功则 arm exact-generation cleanup。
+Construction rollback、normal shutdown、signal shutdown 与 destruction 共享这个
+move-only guard。Cleanup 先重新验证固定 parent descriptor、parent pathname、socket
+type 与两组 generation；mismatch 或 replacement 会保留当前 path。正常匹配的 cleanup
+移除 node 并允许 clean restart。
+
+Listener setup 不执行 bind 后 pathname `chmod`。Socket node 的 ambient mode 由调用者
+目录和 process umask 决定，不是 authentication boundary，也从不用于授权 peer。Peer
+credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。Portable POSIX
+没有 conditional compare-and-unlink primitive：最终 `fstatat` 与
 `unlinkat` 是两条独立 call，实现不声称能防御 hostile same-uid writer 恰好在两者之间
 发起的 race。
 
@@ -197,10 +208,11 @@ Portable POSIX 没有 conditional compare-and-unlink primitive：最终 `fstatat
 - Job state 单调，cancellation 后不能发布 success。
 - Worker/callback exception 被 fenced 到一个 Job failure。
 - descriptor、worker、GraphContext、result 与 queue ownership 恰好 settle 一次。
-- Listener construction 在 bind 前准备 allocation-backed path/configuration state，并让
-  descriptor/socket-node rollback guard 持有到完整 private-state publication。它拒绝
-  所有 existing entry 且不 recovery；identity-matched injected failure 后 exact path 可
-  立即重新 bind，而 replacement generation 会被保留。
+- Listener construction 在 bind 前准备 allocation-backed path/leaf/guard state，在成功
+  bind 与 generation arm 之间不执行可能分配或抛异常的 C++ operation，并让
+  descriptor/socket-node rollback guard 持有到完整 private-state publication。Pre-arm
+  allocation failure 不创建 node，exact path 可立即重新 bind。无法确认的 capture 会保留
+  path；exact-generation cleanup 从不删除或修改 replacement，包括其 mode。
 - daemon production build/package consumer 只使用 isolated installed
   `Photospider::kernel` target。
 

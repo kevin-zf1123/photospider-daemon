@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
+#include <new>
 #include <string>
 #include <utility>
 
@@ -229,21 +230,22 @@ int UniqueDescriptor::release() noexcept {
 }
 
 /**
- * @brief Implements verified socket-generation cleanup construction.
- * @copydetails SocketNodeGuard::SocketNodeGuard(UniqueDescriptor, std::string,
- * std::string, SocketNodeIdentity, SocketNodeIdentity)
+ * @brief Implements allocation-complete pre-bind guard preparation.
+ * @copydetails SocketNodeGuard::SocketNodeGuard(UniqueDescriptor,
+ * std::string&&, std::string&&, SocketNodeIdentity)
  */
 SocketNodeGuard::SocketNodeGuard(UniqueDescriptor parent_directory,
-                                 std::string parent_path, std::string leaf_name,
-                                 SocketNodeIdentity parent_identity,
-                                 SocketNodeIdentity node_identity) noexcept
+                                 std::string&& parent_path,
+                                 std::string&& leaf_name,
+                                 SocketNodeIdentity parent_identity) noexcept
     : parent_directory_(std::move(parent_directory)),
       parent_path_(std::move(parent_path)),
       leaf_name_(std::move(leaf_name)),
       parent_identity_(parent_identity),
-      node_identity_(node_identity),
-      active_(parent_directory_.valid() && !parent_path_.empty() &&
-              !leaf_name_.empty()) {}
+      state_(parent_directory_.valid() && !parent_path_.empty() &&
+                     !leaf_name_.empty()
+                 ? State::Prepared
+                 : State::Empty) {}
 
 /**
  * @brief Implements one conditional cleanup attempt at guard destruction.
@@ -273,9 +275,30 @@ SocketNodeGuard& SocketNodeGuard::operator=(SocketNodeGuard&& other) noexcept {
     leaf_name_ = std::move(other.leaf_name_);
     parent_identity_ = other.parent_identity_;
     node_identity_ = other.node_identity_;
-    active_ = std::exchange(other.active_, false);
+    state_ = std::exchange(other.state_, State::Empty);
   }
   return *this;
+}
+
+/**
+ * @brief Implements allocation-free generation arming after successful bind.
+ * @copydetails SocketNodeGuard::arm
+ */
+void SocketNodeGuard::arm(SocketNodeIdentity node_identity) noexcept {
+  if (state_ == State::Prepared) {
+    node_identity_ = node_identity;
+    state_ = State::Armed;
+  }
+}
+
+/**
+ * @brief Implements fail-closed abandonment after inconclusive capture.
+ * @copydetails SocketNodeGuard::abandon_unverified_bind
+ */
+void SocketNodeGuard::abandon_unverified_bind() noexcept {
+  if (state_ == State::Prepared) {
+    state_ = State::Consumed;
+  }
 }
 
 /**
@@ -283,7 +306,8 @@ SocketNodeGuard& SocketNodeGuard::operator=(SocketNodeGuard&& other) noexcept {
  * @copydetails SocketNodeGuard::remove
  */
 void SocketNodeGuard::remove() noexcept {
-  if (!std::exchange(active_, false) || !parent_directory_.valid()) {
+  if (std::exchange(state_, State::Consumed) != State::Armed ||
+      !parent_directory_.valid()) {
     return;
   }
   struct stat fixed_parent{};
@@ -330,12 +354,29 @@ Result<UniqueDescriptor> connect_unix_socket(const std::string& path) {
   return Result<UniqueDescriptor>(std::move(descriptor));
 }
 
+namespace {
+
 /**
- * @brief Implements creation of a restricted same-user listener.
- * @copydetails create_unix_listener
+ * @brief Implements listener creation with one noninstalled allocation fault.
+ * @param path Exact local socket path.
+ * @param backlog Positive pending-connection bound.
+ * @param fail_prearm_allocation Whether the test runtime injects
+ * `std::bad_alloc` at the guard-state preparation boundary.
+ * @param armed_hook Optional noninstalled callback after generation arm.
+ * @param armed_hook_context Opaque caller-owned callback state.
+ * @return Bound listener ownership or typed setup failure.
+ * @throws std::bad_alloc If path/diagnostic allocation fails or the private
+ * fault is requested.
+ * @note Production builds compile neither test-control parameter nor branch.
  */
-Result<BoundUnixListener> create_unix_listener(const std::string& path,
-                                               int backlog) {
+Result<BoundUnixListener> create_unix_listener_impl(
+    const std::string& path, int backlog
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+    ,
+    bool fail_prearm_allocation, ArmedSocketNodeHookForTest armed_hook,
+    void* armed_hook_context
+#endif
+) {
   auto address = socket_address(path);
   if (!address.ok() || backlog <= 0) {
     return Result<BoundUnixListener>(
@@ -348,8 +389,9 @@ Result<BoundUnixListener> create_unix_listener(const std::string& path,
   if (!parts.ok()) {
     return Result<BoundUnixListener>(parts.status());
   }
+  SocketPathParts path_parts = parts.take_value();
 
-  UniqueDescriptor parent_directory(::open(parts.value().parent_path.c_str(),
+  UniqueDescriptor parent_directory(::open(path_parts.parent_path.c_str(),
                                            O_RDONLY | O_DIRECTORY | O_CLOEXEC));
   if (!parent_directory.valid()) {
     return Result<BoundUnixListener>(
@@ -366,21 +408,30 @@ Result<BoundUnixListener> create_unix_listener(const std::string& path,
   }
   const SocketNodeIdentity parent_identity{parent_state.st_dev,
                                            parent_state.st_ino};
-  if (!parent_path_matches(parts.value().parent_path, parent_identity)) {
+  if (!parent_path_matches(path_parts.parent_path, parent_identity)) {
     return Result<BoundUnixListener>(
         Status::failure(ErrorCode::InvalidArgument,
                         "socket parent directory identity is not stable"));
   }
 
   struct stat existing{};
-  if (::fstatat(parent_directory.get(), parts.value().leaf_name.c_str(),
-                &existing, AT_SYMLINK_NOFOLLOW) == 0) {
+  if (::fstatat(parent_directory.get(), path_parts.leaf_name.c_str(), &existing,
+                AT_SYMLINK_NOFOLLOW) == 0) {
     return Result<BoundUnixListener>(Status::failure(
         ErrorCode::InvalidArgument, "listener path already exists"));
   } else if (errno != ENOENT) {
     return Result<BoundUnixListener>(
         errno_status("could not inspect socket path"));
   }
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  if (fail_prearm_allocation) {
+    throw std::bad_alloc();
+  }
+#endif
+  SocketNodeGuard socket_node(std::move(parent_directory),
+                              std::move(path_parts.parent_path),
+                              std::move(path_parts.leaf_name), parent_identity);
 
   UniqueDescriptor descriptor(::socket(AF_UNIX, SOCK_STREAM, 0));
   if (!descriptor.valid()) {
@@ -394,41 +445,45 @@ Result<BoundUnixListener> create_unix_listener(const std::string& path,
   }
 
   struct stat node_state{};
-  if (::fstatat(parent_directory.get(), parts.value().leaf_name.c_str(),
-                &node_state, AT_SYMLINK_NOFOLLOW) != 0 ||
+  if (::fstatat(socket_node.parent_descriptor(),
+                socket_node.leaf_name().c_str(), &node_state,
+                AT_SYMLINK_NOFOLLOW) != 0 ||
       !S_ISSOCK(node_state.st_mode) ||
-      !parent_path_matches(parts.value().parent_path, parent_identity)) {
+      !parent_path_matches(socket_node.parent_path(), parent_identity)) {
+    socket_node.abandon_unverified_bind();
     return Result<BoundUnixListener>(Status::failure(
         ErrorCode::Internal,
         "could not prove the bound socket pathname generation"));
   }
-  const int parent_descriptor = parent_directory.get();
-  SocketNodeGuard socket_node(
-      std::move(parent_directory), parts.value().parent_path,
-      parts.value().leaf_name, parent_identity,
-      SocketNodeIdentity{node_state.st_dev, node_state.st_ino});
+  socket_node.arm(SocketNodeIdentity{node_state.st_dev, node_state.st_ino});
 
-  if (::fchmodat(parent_descriptor, parts.value().leaf_name.c_str(),
-                 S_IRUSR | S_IWUSR, 0) != 0) {
-    return Result<BoundUnixListener>(
-        errno_status("could not restrict socket mode"));
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  if (armed_hook != nullptr) {
+    armed_hook(path, armed_hook_context);
   }
-  struct stat restricted_state{};
-  if (::fstatat(parent_descriptor, parts.value().leaf_name.c_str(),
-                &restricted_state, AT_SYMLINK_NOFOLLOW) != 0 ||
-      !S_ISSOCK(restricted_state.st_mode) ||
-      !same_identity(restricted_state, SocketNodeIdentity{node_state.st_dev,
-                                                          node_state.st_ino}) ||
-      (restricted_state.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) !=
-          (S_IRUSR | S_IWUSR)) {
-    return Result<BoundUnixListener>(Status::failure(
-        ErrorCode::Internal, "socket mode or generation changed during bind"));
-  }
+#endif
+
   if (::listen(descriptor.get(), backlog) != 0) {
     return Result<BoundUnixListener>(errno_status("could not listen locally"));
   }
   return Result<BoundUnixListener>(
       BoundUnixListener{std::move(descriptor), std::move(socket_node)});
+}
+
+}  // namespace
+
+/**
+ * @brief Implements generation-owned local listener creation.
+ * @copydetails create_unix_listener
+ */
+Result<BoundUnixListener> create_unix_listener(const std::string& path,
+                                               int backlog) {
+  return create_unix_listener_impl(path, backlog
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+                                   ,
+                                   false, nullptr, nullptr
+#endif
+  );
 }
 
 /**
@@ -467,6 +522,27 @@ void shutdown_descriptor(int descriptor) noexcept {
 }
 
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/**
+ * @brief Implements deterministic pre-arm allocation failure injection.
+ * @copydetails
+ * create_unix_listener_with_prearm_allocation_failure_for_test
+ */
+Result<BoundUnixListener>
+create_unix_listener_with_prearm_allocation_failure_for_test(
+    const std::string& path, int backlog) {
+  return create_unix_listener_impl(path, backlog, true, nullptr, nullptr);
+}
+
+/**
+ * @brief Implements deterministic post-arm pathname replacement injection.
+ * @copydetails create_unix_listener_with_armed_hook_for_test
+ */
+Result<BoundUnixListener> create_unix_listener_with_armed_hook_for_test(
+    const std::string& path, int backlog, ArmedSocketNodeHookForTest hook,
+    void* context) {
+  return create_unix_listener_impl(path, backlog, false, hook, context);
+}
+
 /**
  * @brief Implements noninstalled SIGPIPE preparation failure verification.
  * @copydetails prepare_stream_for_test

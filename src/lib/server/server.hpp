@@ -75,7 +75,7 @@ struct ServerConfig final {
 class Server final {
  public:
   /**
-   * @brief Creates service state and binds a restricted local listener.
+   * @brief Creates service state and binds a generation-owned local listener.
    * @param config Exact socket and positive resource bounds.
    * @throws std::invalid_argument For invalid configuration.
    * @throws std::runtime_error If the local listener cannot be created.

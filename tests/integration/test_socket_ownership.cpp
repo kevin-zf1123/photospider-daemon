@@ -10,7 +10,9 @@
 #include <cstring>
 #include <future>
 #include <memory>
+#include <new>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -119,7 +121,7 @@ internal::UniqueDescriptor bind_raw_socket(const std::string& path,
  */
 internal::ServerConfig server_config(const std::string& path) {
   return internal::ServerConfig{
-      path, internal::ServiceConfig{1U, 4U, 2U, false}, 4, 4U};
+      path, internal::ServiceConfig{1U, 4U, 2U, false}, 4, 4U, {}, {}};
 }
 
 /**
@@ -281,21 +283,135 @@ bool clean_restart_is_available() {
   return path_absent(path);
 }
 
+/**
+ * @brief Proves pre-arm allocation failure leaves no bound socket residue.
+ * @return True when the exception propagates, the path stays absent, and an
+ * immediate clean restart can bind and remove the same exact path.
+ * @throws std::bad_alloc If fixture or restart allocation fails outside the
+ * injected boundary.
+ * @note Residue is removed only after all failure observations are captured so
+ * the regression distinguishes safe rollback from test-owned cleanup.
+ */
+bool prearm_allocation_failure_is_clean() {
+  const std::string path = socket_path();
+  bool exception_propagated = false;
+  try {
+    auto unexpected =
+        internal::create_unix_listener_with_prearm_allocation_failure_for_test(
+            path, 4);
+    static_cast<void>(unexpected);
+  } catch (const std::bad_alloc&) {
+    exception_propagated = true;
+  }
+
+  const bool absent_after_failure = path_absent(path);
+  auto rebound = internal::create_unix_listener(path, 4);
+  const bool clean_restart = rebound.ok();
+  if (rebound.ok()) {
+    auto listener = rebound.take_value();
+    listener.descriptor.reset();
+    listener.socket_node.remove();
+  }
+  if (!path_absent(path)) {
+    ::unlink(path.c_str());
+  }
+  return exception_propagated && absent_after_failure && clean_restart;
+}
+
+/** @brief State captured while a bound socket pathname is replaced by a file.
+ */
+struct ReplacementModeProbe final {
+  /** @brief Exact regular-file mode established through its open descriptor. */
+  mode_t expected_mode = S_IRUSR | S_IWUSR | S_IRGRP;
+  /** @brief Identity captured after the replacement is installed. */
+  NodeIdentity identity;
+  /** @brief True only after replacement creation and mode assignment succeed.
+   */
+  bool installed = false;
+};
+
+/**
+ * @brief Replaces one armed socket pathname with a fixed-mode regular file.
+ * @param path Exact armed listener pathname.
+ * @param context Non-null `ReplacementModeProbe` destination.
+ * @throws Nothing.
+ * @note Descriptor-bound `fchmod` gives the fixture an exact starting mode;
+ * the product under test must not later mutate it through the pathname.
+ */
+void install_fixed_mode_replacement(const std::string& path,
+                                    void* context) noexcept {
+  auto* probe = static_cast<ReplacementModeProbe*>(context);
+  if (probe == nullptr || ::unlink(path.c_str()) != 0) {
+    return;
+  }
+  internal::UniqueDescriptor file(
+      ::open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY, S_IRUSR | S_IWUSR));
+  if (!file.valid() || ::fchmod(file.get(), probe->expected_mode) != 0) {
+    return;
+  }
+  probe->identity = node_identity(path);
+  probe->installed = S_ISREG(probe->identity.mode);
+}
+
+/**
+ * @brief Proves listener setup never mutates a replacement target's mode.
+ * @return True when the same replacement inode and exact fixture mode survive
+ * listener completion plus generation-checked cleanup.
+ * @throws std::bad_alloc If fixture or diagnostic allocation fails.
+ * @note The callback replaces the pathname after the original socket
+ * generation is armed, at the historical pathname-based chmod window.
+ */
+bool replacement_target_mode_is_unchanged() {
+  const std::string path = socket_path();
+  ReplacementModeProbe probe;
+  {
+    auto listener = internal::create_unix_listener_with_armed_hook_for_test(
+        path, 4, install_fixed_mode_replacement, &probe);
+    static_cast<void>(listener);
+  }
+  const NodeIdentity after = node_identity(path);
+  const bool unchanged =
+      probe.installed && S_ISREG(after.mode) &&
+      same_identity(probe.identity, after) &&
+      (after.mode & (S_IRWXU | S_IRWXG | S_IRWXO)) == probe.expected_mode;
+  ::unlink(path.c_str());
+  return unchanged;
+}
+
 }  // namespace
 
 /**
  * @brief Exercises fail-closed Unix socket pathname generation ownership.
+ * @param argc Argument count; accepts at most one focused regression mode.
+ * @param argv Argument vector containing an optional focused mode.
  * @return Zero when every existing/replaced/concurrent path remains correct.
  * @throws std::bad_alloc If fixture allocation fails.
  * @throws std::system_error If async test setup fails.
  * @note Behavioral failures return nonzero through `PS_IPC_CHECK`.
  */
-int main() {
+int main(int argc, char* argv[]) {
+  if (argc == 2) {
+    const std::string_view mode(argv[1]);
+    if (mode == "prearm-allocation") {
+      PS_IPC_CHECK(prearm_allocation_failure_is_clean());
+      return 0;
+    }
+    if (mode == "replacement-mode") {
+      PS_IPC_CHECK(replacement_target_mode_is_unchanged());
+      return 0;
+    }
+    return 2;
+  }
+  if (argc != 1) {
+    return 2;
+  }
   PS_IPC_CHECK(live_listener_rejection());
   PS_IPC_CHECK(stale_socket_rejection());
   PS_IPC_CHECK(regular_file_rejection());
   PS_IPC_CHECK(replacement_generation_is_preserved());
   PS_IPC_CHECK(concurrent_bind_has_one_winner());
   PS_IPC_CHECK(clean_restart_is_available());
+  PS_IPC_CHECK(prearm_allocation_failure_is_clean());
+  PS_IPC_CHECK(replacement_target_mode_is_unchanged());
   return 0;
 }

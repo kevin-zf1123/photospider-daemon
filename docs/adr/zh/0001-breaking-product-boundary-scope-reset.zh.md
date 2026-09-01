@@ -85,12 +85,20 @@ gRPC、TLS、remote address、remote worker、v2 compatibility adapter 或双协
 
 Socket startup 明确不提供 recovery。任何已有 pathname（包括 live/stale socket、
 regular file 或 symlink）都直接拒绝，不 unlink 也不 replace。Path 不存在时，并发
-bind 由 operating system 原子裁决。Bind 成功后通过固定 parent directory descriptor
-记录 parent 与 socket 的 `st_dev`/`st_ino` generation。Cleanup 只 unlink 当前仍匹配
-的 socket；任何 mismatch 或无法确认的观察都保留。Portable POSIX 的 `fstatat` 与
-`unlinkat` 仍是两条独立指令，因此这里提供 fail-closed generation hygiene，而不声称
-能对 hostile same-uid writer 实现原子 compare-and-unlink。Automatic stale-node
-reclaim 不属于本次 ephemeral reset；crash residue 由 operator 显式移除。
+bind 由 operating system 原子裁决。所有 allocation-backed path、leaf 与 guard state
+都在 bind 前准备完毕。Bind 成功后，只用不分配的 system observation 通过固定 parent
+directory descriptor 捕获 parent 与 socket 的 `st_dev`/`st_ino` generation，然后才
+arm guard。若 capture 无法确认，则放弃 cleanup 并保留 pathname；guard 一旦 armed，
+cleanup 只 unlink 当前仍匹配的 socket，并保留所有 mismatch。Portable POSIX 的
+`fstatat` 与 `unlinkat` 仍是两条独立指令，因此这里提供 fail-closed generation
+hygiene，而不声称能对 hostile same-uid writer 实现原子 compare-and-unlink。
+Automatic stale-node reclaim 不属于本次 ephemeral reset；crash residue 由 operator
+显式移除。
+
+Daemon 不执行 bind 后的 pathname `chmod`，也不把 socket node 的 ambient mode 当作
+authentication boundary。Embedding caller 选择适当私有的 parent directory。
+Same-user connection acceptance 由 peer credential 强制执行；host 继续拒绝 uid 与
+daemon effective uid 不匹配的 peer。
 
 Wire 传输 `WorkflowDocument` input 和公开 execution option/result。绝不传输
 semantic IR、optimized IR、execution-plan internal、plugin path、DSO handle、
@@ -143,9 +151,9 @@ Daemon 保留 defensive validation，但不宣称 security product：
 - 平台支持时的负向、并发、restart-loss、Session-close、cancel、result release、
   ASAN、TSAN 与 fuzz test。
 
-Unix socket mode/generation 检查是本地 lifecycle correctness 和同用户 path hygiene。
-Same-user 身份不允许旧实例删除 replacement inode；这些检查不是 authentication 或
-tenant isolation。
+Unix socket path/generation 检查属于本地 lifecycle correctness。Peer credential
+强制执行 same-user connection acceptance；socket-node mode 不认证 peer。Same-user
+身份不允许旧实例删除或修改 replacement inode。这些检查都不是 tenant isolation。
 
 ## 精确非目标
 

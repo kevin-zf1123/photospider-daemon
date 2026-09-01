@@ -7,7 +7,7 @@
 ## 产品边界
 
 - `PhotospiderDaemon::client` 是安装的 typed local-IPC client。
-- `photospiderd` 拥有受保护 local socket、临时 Session/Job registry、bounded
+- `photospiderd` 拥有经过 peer 检查的 local socket、临时 Session/Job registry、bounded
   Session/Job/active handler、运行期 handler reaping、cancellation、temporary
   result 与 shutdown。
 - Daemon 只依赖隔离安装的公开 Photospider package。
@@ -80,8 +80,10 @@ private。
 Daemon 验证 bounded binary frame、精确 integer range、UTF-8、request correlation、
 instance-scoped opaque id、Job transition、公开 kernel result
 type/shape/Region/layout、cancellation publication、descriptor/thread cleanup 与 socket
-lifecycle。Unix peer-uid 与 mode-0600 check 建立文档规定的 same-user local boundary；
-它们不会形成 tenant 或 remote-service product。
+lifecycle。Unix peer credential 强制执行 same-user connection acceptance。Socket-node
+mode 不是 authentication boundary：调用者选择适当私有的 parent directory，而 daemon
+只把 pathname generation 用于 fail-closed cleanup。这些属性不会形成 tenant 或
+remote-service product。
 
 Malformed 或 oversized frame 会收到一个 typed protocol-error response，随后 connection
 关闭。若存在可恢复的合法 v3 header，则保留其 request id 与 method；否则使用文档化
