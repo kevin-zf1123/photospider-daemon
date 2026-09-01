@@ -6,11 +6,9 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <future>
-#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -29,6 +27,18 @@
 namespace internal = ps::ipc::internal;
 
 namespace {
+
+/** @brief Interval between public Job-status observations. */
+constexpr std::chrono::milliseconds kJobStatusPollInterval{5};
+
+/** @brief Deadline budget for observing one expected public Job state. */
+constexpr std::chrono::seconds kJobStatusTimeout{4};
+
+/** @brief Long bounded operation delay used to occupy execution workers. */
+constexpr std::int64_t kWorkerSaturationDelayMilliseconds = 5000;
+
+/** @brief Maximum accepted close latency for cancelling long operations. */
+constexpr std::chrono::seconds kSessionCloseTimeout{2};
 
 /**
  * @brief Builds one deterministic addition source document.
@@ -95,10 +105,12 @@ ps::WorkflowDocument compiler_invalid_document() {
  * @param id Existing execution identifier.
  * @return Terminal status.
  * @throws std::runtime_error On RPC failure or timeout.
- * @note Polling is test-only and never changes Job state.
+ * @note Polling is test-only, uses one steady-clock deadline, and never changes
+ * Job state.
  */
 ps::ipc::JobStatus wait_terminal(ps::ipc::Client* client, ps::ipc::JobId id) {
-  for (int attempt = 0; attempt < 400; ++attempt) {
+  const auto deadline = std::chrono::steady_clock::now() + kJobStatusTimeout;
+  while (std::chrono::steady_clock::now() < deadline) {
     auto status = client->job_status(id);
     if (!status.ok()) {
       throw std::runtime_error(status.status().message);
@@ -108,7 +120,7 @@ ps::ipc::JobStatus wait_terminal(ps::ipc::Client* client, ps::ipc::JobId id) {
         status.value().state == ps::ipc::JobState::Cancelled) {
       return status.value();
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::this_thread::sleep_for(kJobStatusPollInterval);
   }
   throw std::runtime_error("execution did not reach terminal state");
 }
@@ -120,11 +132,13 @@ ps::ipc::JobStatus wait_terminal(ps::ipc::Client* client, ps::ipc::JobId id) {
  * @param expected State to observe.
  * @return Matching snapshot.
  * @throws std::runtime_error On RPC failure, early terminal state, or timeout.
- * @note Polling is test-only and never changes Job state.
+ * @note Polling is test-only, uses one steady-clock deadline, and never changes
+ * Job state.
  */
 ps::ipc::JobStatus wait_state(ps::ipc::Client* client, ps::ipc::JobId id,
                               ps::ipc::JobState expected) {
-  for (int attempt = 0; attempt < 400; ++attempt) {
+  const auto deadline = std::chrono::steady_clock::now() + kJobStatusTimeout;
+  while (std::chrono::steady_clock::now() < deadline) {
     auto status = client->job_status(id);
     if (!status.ok()) {
       throw std::runtime_error(status.status().message);
@@ -137,7 +151,7 @@ ps::ipc::JobStatus wait_state(ps::ipc::Client* client, ps::ipc::JobId id,
         status.value().state == ps::ipc::JobState::Cancelled) {
       throw std::runtime_error("execution reached terminal state too early");
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::this_thread::sleep_for(kJobStatusPollInterval);
   }
   throw std::runtime_error("execution did not reach expected state");
 }
@@ -452,81 +466,6 @@ void wait_handler_count(ps::ipc::internal::Server* server,
   }
   throw std::runtime_error("server handler count did not settle");
 }
-
-/**
- * @brief Deterministically blocks workers after they publish `Running`.
- *
- * The gate counts worker arrivals under one mutex and releases every current
- * and future arrival together. Tests can therefore prove all configured
- * workers are occupied before checking that an additional Job is `Queued`.
- *
- * @note Normal paths call `release`; a bounded hook timeout prevents an early
- * assertion return from deadlocking Service destruction.
- */
-class WorkerRunningGate final {
- public:
-  /**
-   * @brief Records one worker arrival and blocks it until release.
-   * @throws std::runtime_error If the bounded release wait expires.
-   * @throws std::system_error If mutex or condition-variable operations fail.
-   * @note The caller must hold no service registry or Job record lock.
-   */
-  void arrive_and_wait() {
-    std::unique_lock<std::mutex> lock(mutex_);
-    ++arrivals_;
-    arrival_changed_.notify_all();
-    if (!released_changed_.wait_for(lock, std::chrono::seconds(5),
-                                    [this] { return released_; })) {
-      throw std::runtime_error("worker running gate was not released");
-    }
-  }
-
-  /**
-   * @brief Waits for an exact minimum number of blocked worker arrivals.
-   * @param expected Positive number of configured workers to observe.
-   * @throws std::invalid_argument If expected is zero.
-   * @throws std::runtime_error If the bounded wait expires.
-   * @throws std::system_error If mutex or condition-variable operations fail.
-   * @note A successful return proves the workers cannot consume another Job
-   * until `release` is called.
-   */
-  void wait_for_arrivals(std::uint32_t expected) {
-    if (expected == 0U) {
-      throw std::invalid_argument("worker gate arrival count must be positive");
-    }
-    std::unique_lock<std::mutex> lock(mutex_);
-    if (!arrival_changed_.wait_for(
-            lock, std::chrono::seconds(2),
-            [this, expected] { return arrivals_ >= expected; })) {
-      throw std::runtime_error("workers did not reach the running gate");
-    }
-  }
-
-  /**
-   * @brief Releases every blocked and future worker arrival.
-   * @throws std::system_error If mutex acquisition fails.
-   * @note The operation is idempotent and does not change Job state itself.
-   */
-  void release() {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      released_ = true;
-    }
-    released_changed_.notify_all();
-  }
-
- private:
-  /** @brief Serializes arrival accounting and the release flag. */
-  std::mutex mutex_;
-  /** @brief Wakes the test when enough workers have arrived. */
-  std::condition_variable arrival_changed_;
-  /** @brief Wakes workers after the test finishes queued-state checks. */
-  std::condition_variable released_changed_;
-  /** @brief Number of workers that entered the hook. */
-  std::uint32_t arrivals_ = 0U;
-  /** @brief Monotonic release flag observed by current and future workers. */
-  bool released_ = false;
-};
 
 }  // namespace
 
@@ -857,49 +796,71 @@ int main() {
   {
     // QueuedCancellationTransitionsThroughRunning regression.
     const std::string queued_cancel_path = socket_path();
-    WorkerRunningGate running_gate;
-    internal::ServiceConfig service_config{2U, 8U, 2U, false};
-    service_config.job_running_hook = [&running_gate] {
-      running_gate.arrive_and_wait();
-    };
-    internal::Server server(internal::ServerConfig{queued_cancel_path,
-                                                   std::move(service_config),
-                                                   8,
-                                                   64U,
-                                                   {},
-                                                   {}});
+    internal::Server server(
+        internal::ServerConfig{queued_cancel_path,
+                               internal::ServiceConfig{2U, 8U, 2U, false},
+                               8,
+                               64U,
+                               {},
+                               {}});
     auto server_result = start_server(&server);
     Client client;
     PS_IPC_CHECK(client.connect(queued_cancel_path).ok());
-    auto session = client.session_create(addition_document(1.0, 2.0));
-    PS_IPC_CHECK(session.ok());
-    auto running_a = client.job_submit(session.value());
-    auto running_b = client.job_submit(session.value());
+    auto running_session = client.session_create(
+        delayed_document(kWorkerSaturationDelayMilliseconds));
+    auto queued_session = client.session_create(addition_document(1.0, 2.0));
+    PS_IPC_CHECK(running_session.ok());
+    PS_IPC_CHECK(queued_session.ok());
+    auto running_a = client.job_submit(running_session.value());
+    auto running_b = client.job_submit(running_session.value());
     PS_IPC_CHECK(running_a.ok());
     PS_IPC_CHECK(running_b.ok());
-    running_gate.wait_for_arrivals(2U);
-    PS_IPC_CHECK(client.job_status(running_a.value()).value().state ==
-                 JobState::Running);
-    PS_IPC_CHECK(client.job_status(running_b.value()).value().state ==
-                 JobState::Running);
+    PS_IPC_CHECK(
+        wait_state(&client, running_a.value(), JobState::Running).state ==
+        JobState::Running);
+    PS_IPC_CHECK(
+        wait_state(&client, running_b.value(), JobState::Running).state ==
+        JobState::Running);
 
-    auto queued = client.job_submit(session.value());
+    auto queued = client.job_submit(queued_session.value());
     PS_IPC_CHECK(queued.ok());
-    auto before_cancel = client.job_status(queued.value());
-    PS_IPC_CHECK(before_cancel.ok());
-    PS_IPC_CHECK(before_cancel.value().state == JobState::Queued);
+    PS_IPC_CHECK(wait_state(&client, queued.value(), JobState::Queued).state ==
+                 JobState::Queued);
     PS_IPC_CHECK(client.job_cancel(queued.value()).ok());
-    PS_IPC_CHECK(client.job_cancel(running_a.value()).ok());
-    PS_IPC_CHECK(client.job_cancel(running_b.value()).ok());
-    running_gate.release();
 
-    PS_IPC_CHECK(wait_terminal(&client, running_a.value()).state ==
-                 JobState::Cancelled);
-    PS_IPC_CHECK(wait_terminal(&client, running_b.value()).state ==
-                 JobState::Cancelled);
+    const auto close_started = std::chrono::steady_clock::now();
+    PS_IPC_CHECK(client.session_close(running_session.value()).ok());
+    PS_IPC_CHECK(std::chrono::steady_clock::now() - close_started <
+                 kSessionCloseTimeout);
+    for (const JobId id : {running_a.value(), running_b.value()}) {
+      auto missing_status = client.job_status(id);
+      auto missing_result = client.job_result(id);
+      PS_IPC_CHECK(!missing_status.ok());
+      PS_IPC_CHECK(missing_status.status().code == ErrorCode::NotFound);
+      PS_IPC_CHECK(!missing_result.ok());
+      PS_IPC_CHECK(missing_result.status().code == ErrorCode::NotFound);
+    }
     PS_IPC_CHECK(wait_terminal(&client, queued.value()).state ==
                  JobState::Cancelled);
-    PS_IPC_CHECK(client.session_close(session.value()).ok());
+    auto cancelled_result = client.job_result(queued.value());
+    PS_IPC_CHECK(!cancelled_result.ok());
+    PS_IPC_CHECK(cancelled_result.status().code == ErrorCode::Cancelled);
+    auto retained = client.daemon_info();
+    PS_IPC_CHECK(retained.ok());
+    PS_IPC_CHECK(retained.value().active_sessions == 1U);
+    PS_IPC_CHECK(retained.value().active_jobs == 1U);
+
+    PS_IPC_CHECK(client.session_close(queued_session.value()).ok());
+    auto missing_status = client.job_status(queued.value());
+    auto missing_result = client.job_result(queued.value());
+    PS_IPC_CHECK(!missing_status.ok());
+    PS_IPC_CHECK(missing_status.status().code == ErrorCode::NotFound);
+    PS_IPC_CHECK(!missing_result.ok());
+    PS_IPC_CHECK(missing_result.status().code == ErrorCode::NotFound);
+    auto released = client.daemon_info();
+    PS_IPC_CHECK(released.ok());
+    PS_IPC_CHECK(released.value().active_sessions == 0U);
+    PS_IPC_CHECK(released.value().active_jobs == 0U);
     PS_IPC_CHECK(client.daemon_shutdown().ok());
     PS_IPC_CHECK(server_result.get().ok());
   }
