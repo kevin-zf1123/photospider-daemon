@@ -48,7 +48,8 @@ struct ServerConfig final {
    * The callback runs after descriptor registration and before frame reads.
    * It must be thread-safe when multiple handlers enter concurrently.
    * Exceptions are fenced into one typed connection failure and cleanup.
-   * Production callers normally leave it empty.
+   * This field is visible only in the noninstalled test runtime and remains
+   * empty when a test does not inject a handler-entry observation or fault.
    */
   std::function<void()> handler_entry_hook;
   /**
@@ -56,7 +57,8 @@ struct ServerConfig final {
    *
    * The callback runs synchronously on the constructing thread at a named
    * post-bind stage. Exceptions must leave no descriptor or socket node.
-   * Production callers normally leave it empty.
+   * This field is visible only in the noninstalled test runtime and remains
+   * empty when a test does not inject a construction observation or fault.
    */
   std::function<void(ServerConstructionStage)> construction_hook;
 #endif
@@ -157,7 +159,7 @@ class Server final {
    * @return Exact registered descriptor count, or maximum size on lock
    * failure.
    * @throws Nothing.
-   * @note This method exists only in the noninstalled exception-test variant.
+   * @note This method exists only in the noninstalled test-runtime variant.
    */
   [[nodiscard]] std::size_t active_connection_count_for_test() const noexcept;
 #endif
