@@ -72,6 +72,22 @@ ps::WorkflowDocument delayed_document(std::int64_t milliseconds) {
 }
 
 /**
+ * @brief Builds a wire-valid source with an unregistered operation key.
+ * @return One-node public workflow that fails only during kernel compilation.
+ * @throws std::bad_alloc If source storage allocation fails.
+ * @note Encoding accepts this source; no Session may publish after compile
+ * failure.
+ */
+ps::WorkflowDocument compiler_invalid_document() {
+  ps::WorkflowDocument document;
+  document.nodes = {
+      ps::WorkflowNode{1U, "missing.operation", {}, {}},
+  };
+  document.outputs = {ps::WorkflowOutput{"value", 1U, "value"}};
+  return document;
+}
+
+/**
  * @brief Polls one execution until a terminal state or bounded timeout.
  * @param client Connected sequential client.
  * @param id Existing execution identifier.
@@ -718,6 +734,49 @@ int main() {
     PS_IPC_CHECK(server.retained_handler_count() == 0U);
   }
 
+  {
+    // CloseCancelsRunningAndQueuedWithoutStalePublication regression.
+    const std::string closing_path = socket_path();
+    internal::Server server(
+        internal::ServerConfig{closing_path,
+                               internal::ServiceConfig{1U, 8U, 2U, false},
+                               8,
+                               64U,
+                               {},
+                               {}});
+    auto server_result = start_server(&server);
+    Client client;
+    PS_IPC_CHECK(client.connect(closing_path).ok());
+    auto session = client.session_create(delayed_document(5000));
+    PS_IPC_CHECK(session.ok());
+    auto running = client.job_submit(session.value());
+    PS_IPC_CHECK(running.ok());
+    PS_IPC_CHECK(
+        wait_state(&client, running.value(), JobState::Running).state ==
+        JobState::Running);
+    auto queued = client.job_submit(session.value());
+    PS_IPC_CHECK(queued.ok());
+    auto queued_status = client.job_status(queued.value());
+    PS_IPC_CHECK(queued_status.ok());
+    PS_IPC_CHECK(queued_status.value().state == JobState::Queued);
+
+    PS_IPC_CHECK(client.session_close(session.value()).ok());
+    for (const JobId id : {running.value(), queued.value()}) {
+      auto missing_status = client.job_status(id);
+      auto missing_result = client.job_result(id);
+      PS_IPC_CHECK(!missing_status.ok());
+      PS_IPC_CHECK(missing_status.status().code == ErrorCode::NotFound);
+      PS_IPC_CHECK(!missing_result.ok());
+      PS_IPC_CHECK(missing_result.status().code == ErrorCode::NotFound);
+    }
+    auto after_close = client.daemon_info();
+    PS_IPC_CHECK(after_close.ok());
+    PS_IPC_CHECK(after_close.value().active_sessions == 0U);
+    PS_IPC_CHECK(after_close.value().active_jobs == 0U);
+    PS_IPC_CHECK(client.daemon_shutdown().ok());
+    PS_IPC_CHECK(server_result.get().ok());
+  }
+
   const std::string path = socket_path();
   SessionId old_session;
   JobId old_job;
@@ -745,10 +804,23 @@ int main() {
     PS_IPC_CHECK(info.value().maximum_concurrency == 2U);
     PS_IPC_CHECK(info.value().maximum_sessions == 16U);
 
+    // CompilerInvalidSessionCreateIsAtomic regression.
+    auto before_invalid_create = client.daemon_info();
+    PS_IPC_CHECK(before_invalid_create.ok());
+    auto invalid_create = client.session_create(compiler_invalid_document());
+    PS_IPC_CHECK(!invalid_create.ok());
+    PS_IPC_CHECK(invalid_create.status().code == ErrorCode::NotFound);
+    auto after_invalid_create = client.daemon_info();
+    PS_IPC_CHECK(after_invalid_create.ok());
+    PS_IPC_CHECK(after_invalid_create.value().active_sessions ==
+                 before_invalid_create.value().active_sessions);
+    PS_IPC_CHECK(after_invalid_create.value().active_jobs ==
+                 before_invalid_create.value().active_jobs);
     auto first = client.session_create(addition_document(2.0, 3.0));
     auto second = client.session_create(addition_document(10.0, 20.0));
     PS_IPC_CHECK(first.ok());
     PS_IPC_CHECK(second.ok());
+    PS_IPC_CHECK(first.value().value == 1U);
     PS_IPC_CHECK(first.value().value != second.value().value);
     old_session = first.value();
     auto first_job = client.job_submit(first.value());
@@ -769,7 +841,36 @@ int main() {
     PS_IPC_CHECK(second_result.value().values.at("sum").as_float64().value() ==
                  30.0);
     PS_IPC_CHECK(client.job_release(first_job.value()).ok());
-    PS_IPC_CHECK(!client.job_status(first_job.value()).ok());
+    // ReleaseMakesStatusAndResultNotFound regression.
+    auto released_status = client.job_status(first_job.value());
+    auto released_result = client.job_result(first_job.value());
+    PS_IPC_CHECK(!released_status.ok());
+    PS_IPC_CHECK(released_status.status().code == ErrorCode::NotFound);
+    PS_IPC_CHECK(!released_result.ok());
+    PS_IPC_CHECK(released_result.status().code == ErrorCode::NotFound);
+
+    // RuntimeFailureGetsFreshJobIdAfterResubmit regression.
+    auto failing_session = client.session_create(delayed_document(-1));
+    PS_IPC_CHECK(failing_session.ok());
+    auto failed_job = client.job_submit(failing_session.value());
+    PS_IPC_CHECK(failed_job.ok());
+    auto failed_status = wait_terminal(&client, failed_job.value());
+    PS_IPC_CHECK(failed_status.state == JobState::Failed);
+    PS_IPC_CHECK(failed_status.outcome.code == ErrorCode::InvalidArgument);
+    auto failed_result = client.job_result(failed_job.value());
+    PS_IPC_CHECK(!failed_result.ok());
+    PS_IPC_CHECK(failed_result.status().code == ErrorCode::InvalidArgument);
+    auto resubmitted_job = client.job_submit(failing_session.value());
+    PS_IPC_CHECK(resubmitted_job.ok());
+    PS_IPC_CHECK(resubmitted_job.value().instance ==
+                 failed_job.value().instance);
+    PS_IPC_CHECK(resubmitted_job.value().value != failed_job.value().value);
+    auto resubmitted_status = wait_terminal(&client, resubmitted_job.value());
+    PS_IPC_CHECK(resubmitted_status.state == JobState::Failed);
+    PS_IPC_CHECK(resubmitted_status.outcome.code == ErrorCode::InvalidArgument);
+    PS_IPC_CHECK(client.job_release(failed_job.value()).ok());
+    PS_IPC_CHECK(client.job_release(resubmitted_job.value()).ok());
+    PS_IPC_CHECK(client.session_close(failing_session.value()).ok());
 
     auto saturation = client.session_create(delayed_document(500));
     PS_IPC_CHECK(saturation.ok());
