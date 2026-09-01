@@ -403,6 +403,10 @@ Server::Server(ServerConfig config) {
       config.maximum_active_connections > 4096U) {
     throw std::invalid_argument("local server configuration is invalid");
   }
+  const Status path_status = validate_unix_socket_path(config.socket_path);
+  if (!path_status.ok()) {
+    throw std::invalid_argument(path_status.message);
+  }
   auto listener =
       create_unix_listener(config.socket_path, config.listen_backlog);
   if (!listener.ok()) {

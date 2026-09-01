@@ -277,12 +277,26 @@ struct BoundUnixListener final {
 };
 
 /**
+ * @brief Validates one pathname before any socket or filesystem syscall.
+ * @param path Exact caller-supplied bytes.
+ * @return Success or `InvalidArgument` for empty, over-bound, or embedded-NUL
+ * path bytes.
+ * @throws std::bad_alloc If a failure diagnostic allocation fails.
+ * @note The check is shared by connect/listen and preserves `std::string`
+ * length semantics instead of allowing POSIX `c_str()` prefix truncation.
+ */
+[[nodiscard]] Status validate_unix_socket_path(const std::string& path);
+
+/**
  * @brief Connects one local stream to an explicit Unix-domain socket path.
  * @param path Exact local filesystem socket path.
  * @return Connected owned descriptor or typed argument/transport failure.
  * @throws std::bad_alloc If path or diagnostic allocation fails.
- * @note Darwin configures descriptor-level `SO_NOSIGPIPE` before connect. A
- * configuration failure closes the descriptor and publishes no connection.
+ * @note The returned descriptor is close-on-exec. Linux requests this
+ * atomically at socket creation; platforms without that facility use checked
+ * `fcntl`, whose create-to-flag interval is not atomic against a concurrent
+ * fork. Darwin also configures descriptor-level `SO_NOSIGPIPE` before connect.
+ * Any preparation failure closes the descriptor and publishes no connection.
  * No discovery, retry, remote endpoint, or daemon start is performed.
  */
 [[nodiscard]] Result<UniqueDescriptor> connect_unix_socket(
@@ -295,12 +309,13 @@ struct BoundUnixListener final {
  * @return Bound descriptor plus exact socket-node generation guard, or typed
  * failure.
  * @throws std::bad_alloc If pre-bind path or later diagnostic allocation fails.
- * @note Every existing filesystem entry, including a stale/live socket, is
- * rejected without removal. When absent, concurrent binds are arbitrated by
- * the operating system; no stale-node recovery is attempted. Socket-node mode
- * follows the caller's directory and process umask and is not an authentication
- * boundary. Callers select a suitably private parent directory; accepted peers
- * are separately checked by `accept_same_user()`.
+ * @note Listener and fixed-parent descriptors are close-on-exec. Every
+ * existing filesystem entry, including a stale/live socket, is rejected
+ * without removal. When absent, concurrent binds are arbitrated by the
+ * operating system; no stale-node recovery is attempted. Socket-node mode
+ * follows the caller's directory and process umask and is not an
+ * authentication boundary. Callers select a suitably private parent
+ * directory; accepted peers are separately checked by `accept_same_user()`.
  */
 [[nodiscard]] Result<BoundUnixListener> create_unix_listener(
     const std::string& path, int backlog);
@@ -310,9 +325,11 @@ struct BoundUnixListener final {
  * @param listener Valid listening descriptor.
  * @return Connected descriptor or typed accept/peer failure.
  * @throws std::bad_alloc If a failure diagnostic allocation fails.
- * @note Darwin configures descriptor-level `SO_NOSIGPIPE` immediately after
- * accept. A configuration failure and a rejected peer are closed before
- * return.
+ * @note Accepted descriptors are close-on-exec. Linux requests the flag
+ * atomically with `accept4`; unsupported platforms use checked `fcntl`, whose
+ * accept-to-flag interval is not atomic against a concurrent fork. Darwin
+ * configures descriptor-level `SO_NOSIGPIPE` immediately after accept. Every
+ * preparation failure and rejected peer is closed before return.
  */
 [[nodiscard]] Result<UniqueDescriptor> accept_same_user(int listener);
 

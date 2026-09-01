@@ -47,6 +47,14 @@ allocates from the attacker-declared frame length. The reader retains at most
 the fixed eleven-byte request header for correlation and grows complete
 payload storage only as bytes actually arrive.
 
+Client, listener, accepted-stream, and fixed parent-directory descriptors are
+close-on-exec. Linux creates sockets with `SOCK_CLOEXEC` and accepts with
+`accept4(..., SOCK_CLOEXEC)`. When those atomic facilities are explicitly
+unsupported, checked `F_GETFD`/`F_SETFD(FD_CLOEXEC)` fallback is used; any
+failure closes the descriptor and returns a typed failure. Darwin uses this
+fallback, so a concurrent fork can observe the finite create/accept-to-fcntl
+window; the implementation does not claim atomic close-on-exec there.
+
 Inside the payload, integers are little-endian. Text and byte vectors use a
 little-endian uint32 byte count followed by exact bytes. Text is canonical
 UTF-8 and subject to its field-specific limit. Booleans are exactly zero or
@@ -201,6 +209,11 @@ startup failure and remains unchanged. The daemon performs no stale-node probe,
 automatic unlink, crash recovery, or lock-file recovery. Concurrent attempts
 that both observe absence rely on the atomic Unix `bind` result to select one
 owner.
+
+An empty, over-bound, or embedded-NUL pathname is `InvalidArgument`. Validation
+uses the complete `std::string` before split, parent open, socket creation,
+bind, or connect, so POSIX NUL termination cannot redirect an operation to a
+shorter prefix.
 
 Before bind, the listener moves every allocation-backed parent path, leaf, and
 fixed-directory capability into an inactive guard. After bind and before arm,
