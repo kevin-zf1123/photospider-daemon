@@ -10,6 +10,19 @@ include(CMakePackageConfigHelpers)
 include(CTest)
 include(GNUInstallDirs)
 
+option(PHOTOSPIDER_DAEMON_ENABLE_ASAN
+       "Enable AddressSanitizer for daemon validation" OFF)
+option(PHOTOSPIDER_DAEMON_ENABLE_TSAN
+       "Enable ThreadSanitizer for daemon validation" OFF)
+option(
+  PHOTOSPIDER_DAEMON_BUILD_MANUAL_FUZZ_TARGETS
+  "Build explicit long-lived libFuzzer harnesses outside default build/CTest"
+  OFF)
+
+if(PHOTOSPIDER_DAEMON_ENABLE_ASAN AND PHOTOSPIDER_DAEMON_ENABLE_TSAN)
+  message(FATAL_ERROR "daemon ASAN and TSAN cannot be enabled together")
+endif()
+
 find_package(Photospider 0.2 CONFIG REQUIRED COMPONENTS kernel)
 find_package(Threads REQUIRED)
 
@@ -44,6 +57,17 @@ target_compile_definitions(
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(
     photospider_daemon_client PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  if(PHOTOSPIDER_DAEMON_ENABLE_ASAN)
+    target_compile_options(
+      photospider_daemon_client PUBLIC -fsanitize=address
+                                       -fno-omit-frame-pointer)
+    target_link_options(photospider_daemon_client PUBLIC -fsanitize=address)
+  elseif(PHOTOSPIDER_DAEMON_ENABLE_TSAN)
+    target_compile_options(
+      photospider_daemon_client PUBLIC -fsanitize=thread
+                                       -fno-omit-frame-pointer)
+    target_link_options(photospider_daemon_client PUBLIC -fsanitize=thread)
+  endif()
 endif()
 
 add_executable(photospiderd apps/photospiderd/main.cpp)
@@ -54,13 +78,43 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(photospiderd PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+if(PHOTOSPIDER_DAEMON_BUILD_MANUAL_FUZZ_TARGETS)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "daemon manual fuzz target requires Clang libFuzzer")
+  endif()
+  if(PHOTOSPIDER_DAEMON_ENABLE_TSAN)
+    message(FATAL_ERROR "daemon libFuzzer target cannot combine with TSAN")
+  endif()
+  target_compile_options(
+    photospider_daemon_client
+    PRIVATE -fsanitize=fuzzer-no-link -fno-omit-frame-pointer)
+  target_link_options(photospider_daemon_client
+                      INTERFACE -fsanitize=fuzzer-no-link)
+  add_executable(
+    photospider_daemon_frame_codec_fuzz EXCLUDE_FROM_ALL
+    tests/fuzz/frame_codec_fuzz.cpp)
+  target_include_directories(
+    photospider_daemon_frame_codec_fuzz PRIVATE src/lib)
+  target_link_libraries(
+    photospider_daemon_frame_codec_fuzz PRIVATE photospider_daemon_client)
+  target_compile_features(photospider_daemon_frame_codec_fuzz
+                          PRIVATE cxx_std_17)
+  target_compile_options(
+    photospider_daemon_frame_codec_fuzz
+    PRIVATE -fsanitize=fuzzer -fno-omit-frame-pointer -Wall -Wextra -Wpedantic
+            -Werror)
+  target_link_options(photospider_daemon_frame_codec_fuzz
+                      PRIVATE -fsanitize=fuzzer)
+endif()
+
 install(
-  TARGETS photospider_daemon_client photospiderd
+  TARGETS photospider_daemon_client
   EXPORT PhotospiderDaemonTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(TARGETS photospiderd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/photospider DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(
   EXPORT PhotospiderDaemonTargets

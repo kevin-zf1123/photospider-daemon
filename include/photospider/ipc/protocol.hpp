@@ -107,6 +107,8 @@ struct DaemonInfo final {
   std::uint64_t active_jobs = 0U;
   /** @brief Fixed global running-execution bound. */
   std::uint32_t maximum_concurrency = 0U;
+  /** @brief Fixed global retained-Session bound. */
+  std::uint32_t maximum_sessions = 0U;
 };
 
 }  // namespace ps::ipc

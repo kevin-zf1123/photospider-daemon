@@ -22,7 +22,14 @@ Daemon CI:
 3. configures the daemon using only that prefix;
 4. builds, runs CTest, installs, and runs an external typed-client consumer;
 5. runs binary-codec, real-process Session/Job/cancellation/result/restart/
-   shutdown, executable-help, and installed-client tests.
+   shutdown, executable-help, and installed-client tests; and
+6. runs separate Clang ASAN and TSAN configure/build/CTest jobs against the
+   same installed-kernel boundary.
+
+The installed-client gate also proves that `bin/photospiderd` exists while the
+generated export set contains exactly `PhotospiderDaemon::client` and no
+executable/server target. The long-lived frame/codec fuzz target is a manual
+developer target, not a default build, CTest, or migration-residue gate.
 
 No job builds an archived kernel or executes old/new wire combinations. There
 is no frozen four-cell gate.

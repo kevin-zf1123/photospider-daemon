@@ -44,6 +44,10 @@ authorization scope、sandbox 或 resource-isolation boundary。
 `session.close` 会拒绝新 submit、取消未完成 Job、等待其有界清理、释放全部临时
 result 并销毁 context。Daemon restart 清空所有 Session。
 
+Session retention 具有一个正值、进程全局的 `maximum_sessions` bound。Admission 在构造
+graph/compiler 或消耗 identifier 前检查容量；registry 满时返回 `ResourceExhausted`。
+Close 精确释放一个 slot，因此后续 create 可复用容量，但不会复用 identifier。
+
 ### 临时 Job
 
 每次被接收的 submit 都得到全新的不透明 `JobId`。状态机严格为：
@@ -83,6 +87,11 @@ Wire 传输 `WorkflowDocument` input 和公开 execution option/result。绝不�
 semantic IR、optimized IR、execution-plan internal、plugin path、DSO handle、
 device handle、cache internal 或 kernel object pointer。
 
+每个 malformed 或 oversized frame 在受控关闭 connection 前最多收到一个 typed error
+response。若能恢复完整合法的 v3 header，response 保留其 request id 与 method；否则使用
+显式 sentinel `request_id=0`、`method=daemon.info`。该 sentinel 只对失败的
+protocol-error response 合法。
+
 ### Result 生命周期
 
 成功 Job 持有内存中的公开 kernel result，直到 `job.release`、Session close、
@@ -96,6 +105,11 @@ receipt、retention promise 或 recovery behavior。
 connection、join 自有线程、释放 result 与 Session、只移除经过验证的 socket path，
 然后退出。Signal shutdown 使用同一 cleanup path。进程 restart 从空 registry
 开始。
+
+Connection handling 具有一个正值、进程全局的 active-handler bound。超过该 bound 的
+admission 返回 `ResourceExhausted`，并在不启动 thread 的情况下关闭。Handler thread
+保持 joinable；accept loop 在 server 运行时 join 并删除 completed record，shutdown
+join 所有剩余 thread。不存在 detached handler。
 
 ### 保留 correctness validation
 

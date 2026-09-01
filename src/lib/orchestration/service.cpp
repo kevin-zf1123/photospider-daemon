@@ -138,8 +138,21 @@ class JobRegistry final {
    */
   ~JobRegistry() noexcept { stop(); }
 
-  JobRegistry(const JobRegistry&) = delete;
-  JobRegistry& operator=(const JobRegistry&) = delete;
+  /**
+   * @brief Forbids duplicating Job records, queues, and worker ownership.
+   * @param other Source registry that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   * @note One registry is the sole owner of each ephemeral JobId domain.
+   */
+  JobRegistry(const JobRegistry& other) = delete;
+  /**
+   * @brief Forbids assigning active Job/worker ownership.
+   * @param other Source registry that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   * @note Worker joins and result cleanup remain exactly once.
+   */
+  JobRegistry& operator=(const JobRegistry& other) = delete;
 
   /**
    * @brief Admits one new execution for an already validated namespace.
@@ -389,8 +402,9 @@ class JobRegistry final {
       }
 
       const bool allow_gpu = gpu_enabled_ && record->options.allow_gpu;
-      auto compiled =
-          compiler_->compile(*record->graph, PlanningOptions{allow_gpu});
+      PlanningOptions planning;
+      planning.allow_gpu = allow_gpu;
+      auto compiled = compiler_->compile(*record->graph, planning);
       if (!compiled.ok()) {
         finish_failure(record, compiled.status());
         return;
@@ -583,7 +597,8 @@ struct Service::Impl final {
                       requested.maximum_jobs, 256U * 1024U * 1024U}),
         jobs(&compiler, &execution, requested.maximum_concurrency,
              requested.maximum_jobs, requested.gpu_enabled, instance_id) {
-    if (config.maximum_concurrency == 0U || config.maximum_jobs == 0U) {
+    if (config.maximum_concurrency == 0U || config.maximum_jobs == 0U ||
+        config.maximum_sessions == 0U) {
       throw std::invalid_argument("service bounds must be positive");
     }
   }
@@ -596,25 +611,34 @@ struct Service::Impl final {
    * @note No internal IR is retained in or accepted from the request.
    */
   Result<SessionId> create_session(const WorkflowDocument& document) {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
+    {
+      std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
+      if (sessions.size() >= config.maximum_sessions) {
+        Status capacity;
+        capacity.code = ErrorCode::ResourceExhausted;
+        return Result<SessionId>(std::move(capacity));
+      }
+      if (next_session_id == 0U) {
+        return Result<SessionId>(Status::failure(
+            ErrorCode::ResourceExhausted, "ephemeral namespace id exhausted"));
+      }
+    }
     auto candidate = std::make_shared<GraphContext>(document);
     auto validation = compiler.compile(*candidate);
     if (!validation.ok()) {
       return Result<SessionId>(validation.status());
     }
-    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
-    std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
-    if (next_session_id == 0U) {
-      return Result<SessionId>(Status::failure(
-          ErrorCode::ResourceExhausted, "ephemeral namespace id exhausted"));
-    }
     auto record = std::make_shared<SessionRecord>();
     record->id.instance = instance_id;
-    record->id.value = next_session_id++;
+    record->id.value = next_session_id;
     record->graph = std::move(candidate);
+    std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
     if (!sessions.emplace(record->id.value, record).second) {
       return Result<SessionId>(Status::failure(
           ErrorCode::Internal, "ephemeral namespace id was duplicated"));
     }
+    ++next_session_id;
     return Result<SessionId>(record->id);
   }
 
@@ -783,6 +807,7 @@ Response Service::dispatch(const Request& request) noexcept {
         response.daemon_info.active_jobs = impl_->jobs.size();
         response.daemon_info.maximum_concurrency =
             impl_->config.maximum_concurrency;
+        response.daemon_info.maximum_sessions = impl_->config.maximum_sessions;
         break;
       case Method::DaemonShutdown:
         impl_->shutting_down.store(true, std::memory_order_release);

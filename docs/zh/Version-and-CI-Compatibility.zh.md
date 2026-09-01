@@ -22,7 +22,13 @@ Daemon CI：
 3. 只使用该 prefix 配置 daemon；
 4. build、运行 CTest、install，并运行 external typed-client consumer；
 5. 运行 binary-codec、real-process Session/Job/cancellation/result/restart/shutdown、
-   executable-help 与 installed-client test。
+   executable-help 与 installed-client test；
+6. 针对相同 installed-kernel boundary 分别运行 Clang ASAN 与 TSAN
+   configure/build/CTest job。
+
+Installed-client gate 还证明 `bin/photospiderd` 存在，同时 generated export set 只包含
+`PhotospiderDaemon::client`，不包含 executable/server target。长期 frame/codec fuzz
+target 是手动 developer target，不属于 default build、CTest 或 migration-residue gate。
 
 没有 job 构建 archived kernel 或执行 old/new wire combination。不存在 frozen
 four-cell gate。
