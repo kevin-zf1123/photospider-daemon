@@ -29,7 +29,9 @@ never a sibling source target or private kernel include path.
   deterministic post-bind construction failures with descriptor/node cleanup
   plus same-path rebinding.
 - Installed-consumer tests prove that `bin/photospiderd` is installed while
-  only `PhotospiderDaemon::client` appears in the CMake export set.
+  only `PhotospiderDaemon::client` appears in the CMake export set. A dedicated
+  `BUILD_SHARED_LIBS=ON` package gate also proves that this target remains a
+  usable static archive and creates no shared client ABI.
 
 ## Sanitizers
 

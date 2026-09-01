@@ -19,9 +19,10 @@ compiler/planner logic 或序列化内部 IR。Kernel 不依赖 daemon。
 
 Daemon package 只 export typed client header 与 `PhotospiderDaemon::client`。它另行
 安装供运行时使用的 `bin/photospiderd`；executable 有意不出现在
-`PhotospiderDaemonTargets.cmake`。Frame、codec、Unix socket、router、Session/Job
-registry 与 server 保持 private。不 export raw binary/protocol escape hatch 或 server
-SDK。
+`PhotospiderDaemonTargets.cmake`。Client 始终是 static library，不受
+`BUILD_SHARED_LIBS` 影响；package 不定义 shared client ABI。Frame、codec、Unix
+socket、router、Session/Job registry 与 server 保持 private。不 export raw
+binary/protocol escape hatch 或 server SDK。
 
 Producer 通过 `find_package(Photospider 0.2 CONFIG REQUIRED COMPONENTS kernel)` 发现
 精确支持的 Photospider 0.x package。Package version update 是有意的 breaking-

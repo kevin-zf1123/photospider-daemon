@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <utility>
 
 #include "ipc/codec.hpp"
 
@@ -13,6 +15,27 @@ namespace ps::ipc::internal {
  * @note Bounds are global maintenance controls, not per-namespace quotas.
  */
 struct ServiceConfig final {
+  /**
+   * @brief Captures fixed local bounds and an optional worker lifecycle hook.
+   * @param requested_concurrency Positive worker count validated by Service.
+   * @param requested_jobs Positive retained-Job bound validated by Service.
+   * @param requested_sessions Positive Session bound validated by Service.
+   * @param requested_gpu Whether the optional local GPU lane is configured.
+   * @param requested_job_running_hook Optional private synchronization seam.
+   * @throws Nothing after the callback argument has been constructed.
+   * @note Production callers omit the hook; Service performs bound validation.
+   */
+  explicit ServiceConfig(
+      std::uint32_t requested_concurrency = 1U,
+      std::uint32_t requested_jobs = 1024U,
+      std::uint32_t requested_sessions = 128U, bool requested_gpu = false,
+      std::function<void()> requested_job_running_hook = {}) noexcept
+      : maximum_concurrency(requested_concurrency),
+        maximum_jobs(requested_jobs),
+        maximum_sessions(requested_sessions),
+        gpu_enabled(requested_gpu),
+        job_running_hook(std::move(requested_job_running_hook)) {}
+
   /** @brief Positive number of concurrent compile/execute worker loops. */
   std::uint32_t maximum_concurrency = 1U;
   /** @brief Maximum retained queued/running/terminal records. */
@@ -21,6 +44,14 @@ struct ServiceConfig final {
   std::uint32_t maximum_sessions = 128U;
   /** @brief Whether the optional local kernel GPU lane is configured. */
   bool gpu_enabled = false;
+  /**
+   * @brief Optional private synchronization seam after `Running` publication.
+   * @note The hook runs concurrently on worker threads outside registry locks,
+   * before cancellation and compilation checks. Production configuration leaves
+   * it empty; deterministic tests may block it but must release every worker
+   * before service destruction. Exceptions are fenced into terminal Job state.
+   */
+  std::function<void()> job_running_hook;
 };
 
 /**

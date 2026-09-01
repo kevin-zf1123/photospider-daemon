@@ -102,6 +102,8 @@ class JobRegistry final {
    * @param maximum_jobs Positive retained-record bound.
    * @param gpu_enabled Whether submit may opt into local GPU planning.
    * @param instance_id Nonzero process-lifetime identifier domain.
+   * @param job_running_hook Optional private synchronization seam invoked after
+   * each `Running` publication and before cancellation/compilation checks.
    * @throws std::invalid_argument If pointers or bounds are invalid.
    * @throws std::bad_alloc If worker ownership allocation fails.
    * @throws std::system_error If a fixed worker cannot be started.
@@ -109,12 +111,14 @@ class JobRegistry final {
    */
   JobRegistry(Compiler* compiler, ExecutionContext* execution,
               std::uint32_t maximum_concurrency, std::uint32_t maximum_jobs,
-              bool gpu_enabled, std::uint64_t instance_id)
+              bool gpu_enabled, std::uint64_t instance_id,
+              std::function<void()> job_running_hook)
       : compiler_(compiler),
         execution_(execution),
         maximum_jobs_(maximum_jobs),
         gpu_enabled_(gpu_enabled),
-        instance_id_(instance_id) {
+        instance_id_(instance_id),
+        job_running_hook_(std::move(job_running_hook)) {
     if (!compiler_ || !execution_ || maximum_concurrency == 0U ||
         maximum_jobs_ == 0U || instance_id_ == 0U) {
       throw std::invalid_argument(
@@ -396,6 +400,10 @@ class JobRegistry final {
         record->state = JobState::Running;
       }
 
+      if (job_running_hook_) {
+        job_running_hook_();
+      }
+
       if (record->cancellation.token().cancelled()) {
         finish_cancelled(record, "execution cancelled before compilation");
         return;
@@ -554,6 +562,11 @@ class JobRegistry final {
   bool gpu_enabled_;
   /** @brief Nonzero owning daemon-instance token. */
   std::uint64_t instance_id_;
+  /**
+   * @brief Optional immutable private callback after `Running` publication.
+   * @note Concurrent invocations occur outside all registry and record locks.
+   */
+  std::function<void()> job_running_hook_;
   /** @brief Serializes map, queue, stop, and id generation. */
   mutable std::mutex mutex_;
   /** @brief Wakes fixed worker loops. */
@@ -596,7 +609,8 @@ struct Service::Impl final {
                       requested.maximum_concurrency, requested.gpu_enabled,
                       requested.maximum_jobs, 256U * 1024U * 1024U}),
         jobs(&compiler, &execution, requested.maximum_concurrency,
-             requested.maximum_jobs, requested.gpu_enabled, instance_id) {
+             requested.maximum_jobs, requested.gpu_enabled, instance_id,
+             requested.job_running_hook) {
     if (config.maximum_concurrency == 0U || config.maximum_jobs == 0U ||
         config.maximum_sessions == 0U) {
       throw std::invalid_argument("service bounds must be positive");
