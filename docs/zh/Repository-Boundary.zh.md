@@ -1,57 +1,39 @@
-# 仓库与 Package 边界
+# Repository 与 Package 边界
 
 ## 决策
 
-`kevin-zf1123/photospider-daemon` 唯一拥有 local IPC v2 source、package、protocol docs 与
-verification。Photospider kernel 主仓唯一拥有 embedded Host、operation runtime、Job/worker、
-policy、trust、isolation、evidence 与 kernel implementation。
-
-daemon 仓只沿一个方向依赖 installed Photospider package：
+`photospider-daemon` 独占 same-user local IPC v3、临时 Session/Job orchestration、
+`photospiderd`、typed client package 与相关 test。`photospider` 独占
+WorkflowDocument、typed/optimized IR、operation trait、compiler/optimizer/planner、
+local CPU/GPU execution、Value/Region/layout/memory 与 operation/provider runtime。
 
 ```text
-PhotospiderDaemon::client
-  -> Photospider::operation_runtime + Threads::Threads
-
-photospiderd
-  -> private daemon server/client
-  -> Photospider::photospider（installed embedded Host）
+PhotospiderDaemon::client -> installed Photospider::kernel + private IPC implementation
+photospiderd -> PhotospiderDaemon::client + private server/orchestration code
 ```
 
-daemon export 不含 source-tree/`src/lib` path；private protocol targets 绝不安装。本次是完整
-ownership migration，因此不保留旧 `Photospider::photospider_ipc_client` alias。
+Daemon 不链接 sibling source target，也不 include private header；不复制
+compiler/planner logic 或序列化内部 IR。Kernel 不依赖 daemon。
 
-post-split 仓现处于 IPC v2 compatible-maintenance。它拥有 frozen surface 的 fix、package
-compatibility、lifecycle hardening 与 verification，但不拥有 IPC v3 expansion 或 kernel compiler
-artifacts。Kernel Host、Job/worker、policy、trust、isolation、evidence 继续属于 kernel authority。
+## Public package
 
-## 版本与 dependency 边界
+Daemon package 只安装 typed client header 与 `PhotospiderDaemon::client`。Frame、
+codec、Unix socket、router、Session/Job registry 与 server 保持 private。不 export
+raw binary/protocol escape hatch 或 server SDK。
 
-| 版本轴 | K0 值 | Compatibility 边界 |
-| --- | --- | --- |
-| Photospider package | 0.1.0 | daemon producer/installed client 要求 `EXACT`；generated package compatibility 为 same minor |
-| PhotospiderDaemon package | 0.1.0 | generated package compatibility 为 same minor |
-| IPC protocol | v2 | 精确冻结 60-method wire contract |
+Producer 通过 `find_package(Photospider 0.2 CONFIG REQUIRED COMPONENTS kernel)` 发现
+精确支持的 Photospider 0.x package。Package version update 是有意的 breaking-
+compatibility work，必须通过隔离 consumer gate。
 
-Production daemon configure 只要求 Photospider `embedded` 与 `operation_runtime`。
-`operation_plugin_sdk`、`policy_sdk` 只在 `BUILD_TESTING=ON` 时请求，因为它们用于 test fixtures。
-PR CI 固定 supported post-split kernel revision
-`c656ac58046c1d7fdb40372ae575728f526c0f01`；weekly compatible-main job 只是 downstream drift
-signal，不阻塞每个 kernel PR。
+## 显式缺失
 
-## 冻结提取 identity
+仓库没有 IPC v2/four-cell compatibility、graph Host mirror、policy route、plugin
+loader route、durable output store、stable collection cursor、remote transport、
+authentication、tenant、process worker、recovery 或 durable state product。这些能力
+已删除或不在范围内，不是 disabled option。
 
-- Source repository：`kevin-zf1123/photospider`
-- Source commit：`f9fc3aefce45072c6fc6a856da11f20ff16ba00a`
-- Annotated tag：`full-stack-archive-2026-08-30`
-- Tag object：`bb876cbf76882bc0a9029956d6acc9ee3fbaae0e`
-- Extracted-history main head：`de017c1cc004ef6c8497a3cddafa25d99d4da6f3`
+## Archive identity
 
-path filter 会重写 tree/parent identity，因此 extracted commit id 不同；file history 仍可追溯，
-本仓不复制或重定向 original tag object。
-
-## 延期工作
-
-本边界不定义 protocol v3、wire cancel/shutdown、remote/multi-user service、Host capability-facade
-migration、typed compiler compatibility，或更深 Job/trust/isolation/policy/evidence 工作。
-Next-protocol design 在 stable kernel Compiler MVP 前保持 blocked。即使 daemon 将来映射 stable Host
-facade，internal WorkflowDocument/IR/planner artifacts 也不会因此成为 daemon authority。
+重置前 daemon commit `1080548d6bb11d771c89032b7df956c9e2af3674` 由 annotated
+tag `pre-breaking-scope-reset-2026-09-01` 保存。它只是历史 source，不约束 v3
+package 或 wire。

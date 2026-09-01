@@ -1,0 +1,163 @@
+# ADR 0001: Make the Daemon an Ephemeral Local Orchestration Layer
+
+- Status: Accepted
+- Date: 2026-09-01
+- Decision type: Breaking 0.x product-boundary reset
+- Archive tag: `pre-breaking-scope-reset-2026-09-01`
+- Archived daemon commit: `1080548d6bb11d771c89032b7df956c9e2af3674`
+- Companion kernel decision: `photospider/docs/adr/0015`
+
+## Context
+
+The extracted daemon originally maintained local IPC v2 as a frozen 60-method
+facade over the old embedded Host. It also retained a four-cell compatibility
+gate, graph-route mirroring, process-global policy/plugin controls, stable
+collection snapshots, and protected output artifacts. That surface preserved
+the old product split instead of providing the small orchestration layer needed
+by the typed compiler/executor kernel.
+
+This is a deliberate breaking 0.x reset. IPC v2 and its four-cell contract are
+archive-only. Their source remains available through Git history and the
+annotated tag above; no adapter, disabled target, alternate protocol, or
+archived source copy remains in the active tree.
+
+## Decision
+
+### Product role and dependency direction
+
+`photospider-daemon` is a same-user, local, non-persistent orchestration layer.
+It depends only on an isolated installation of the public Photospider package:
+
+```text
+photospiderd and PhotospiderDaemon::client
+  -> installed Photospider public compile/execute/value API
+```
+
+The daemon does not include private kernel headers, link a source-tree target,
+copy compiler/optimizer/planner code, serialize internal IR, or become a
+dependency of the kernel.
+
+### Local Sessions
+
+`SessionId` names one daemon-owned logical namespace in the current daemon
+process. Multiple Sessions share the same user, process, operation set, and
+trust domain. A Session is not a tenant, principal, authorization scope,
+sandbox, or resource-isolation boundary.
+
+`session.create` creates a fresh kernel `GraphContext` through the installed
+public API. `session.close` rejects new submission, cancels unfinished Jobs,
+waits for their bounded cleanup, releases all temporary results, and destroys
+the context. Daemon restart clears every Session.
+
+### Ephemeral Jobs
+
+Every accepted submit receives a fresh opaque `JobId`. The exact state machine
+is:
+
+```text
+Queued -> Running -> Succeeded | Failed | Cancelled
+```
+
+A terminal state is immutable. Cancellation is cooperative and best-effort;
+the daemon forwards it to the kernel cancellation source and rejects any stale
+completion or result publication after cancellation or Session close. Calling
+`job.release` removes the terminal record and temporary result. Ordinary
+process-global concurrency limits and backpressure are allowed.
+
+There is no `JobAttemptId`, automatic retry, checkpoint, recovery journal,
+durable Job specification, artifact id, output commit, receipt, per-tenant
+quota, or retained state across restart. A caller retry is a new submit and a
+new `JobId`.
+
+### Local IPC v3
+
+The protocol exposes exactly nine methods:
+
+1. `session.create`
+2. `session.close`
+3. `job.submit`
+4. `job.status`
+5. `job.cancel`
+6. `job.result`
+7. `job.release`
+8. `daemon.info`
+9. `daemon.shutdown`
+
+Supported POSIX builds use a Unix-domain stream socket. A supported Windows
+port may implement the same frame/protocol contract over a local named-pipe
+abstraction. The product has no TCP, HTTP, gRPC, TLS, remote address, remote
+worker, v2 compatibility adapter, or dual protocol.
+
+The wire carries `WorkflowDocument` input and public execution options/results.
+It never carries semantic IR, optimized IR, execution-plan internals, plugin
+paths, DSO handles, device handles, cache internals, or kernel object pointers.
+
+### Result lifetime
+
+A successful Job owns an in-memory public kernel result until `job.release`,
+Session close, bounded terminal eviction, or daemon shutdown. `job.result`
+returns a typed public value encoding. Results have no durable artifact
+identity, filesystem publication protocol, lease, receipt, retention promise,
+or recovery behavior.
+
+### Shutdown and restart
+
+`daemon.shutdown` stops admission, cancels queued and running Jobs, wakes
+blocked local connections, joins owned threads, releases results and Sessions,
+removes only the verified socket path, and exits. Signal shutdown uses the
+same cleanup path. Process restart begins with empty registries.
+
+### Correctness validation retained
+
+The daemon retains defensive validation without making security-product
+claims:
+
+- bounded frame length, exact integer ranges, valid UTF-8, unique object keys,
+  and method-specific required fields;
+- malformed frame, correlation, opaque-id, state-transition, and result-shape
+  rejection;
+- kernel public type/shape/`Region`/layout/facet errors preserved as stable
+  failures;
+- stale handle, stale completion, and post-cancellation publication rejection;
+- exception fencing, exact descriptor/thread/result cleanup, and bounded
+  backpressure;
+- negative, concurrency, restart-loss, Session-close, cancellation, result
+  release, ASAN, TSAN, and fuzz testing where supported.
+
+Unix socket owner/mode checks are local lifecycle correctness and same-user
+path hygiene. They are not authentication or tenant isolation.
+
+## Exact non-goals
+
+- IPC v2 compatibility or the frozen four-cell gate.
+- A complete remote facade over every kernel operation.
+- Authentication, authorization, Principal, Tenant, role, capability, or
+  multi-tenant quota.
+- Remote access or worker execution.
+- Durable Jobs, attempts, retries, checkpoints, recovery, artifacts, receipts,
+  backup/restore, deployment, or rollback.
+- Policy plugins, plugin admission, cryptographic trust, process isolation, or
+  sandboxing.
+- Loading operation/provider plugins through IPC.
+
+These domains are removed or out of scope, not deferred or default-disabled.
+
+## Superseded authorities
+
+This ADR is the highest active daemon product-boundary authority. It supersedes
+the previous repository boundary, version/CI compatibility contract, local IPC
+v2 protocol, four-cell compatibility tooling, and any active Issue or Project
+description that treats those materials as maintained behavior. The archived
+pre-reset tag is historical evidence only and must not be linked as active
+authority.
+
+## Consequences
+
+- Existing v2 clients do not connect to v3 and no compatibility layer is
+  provided.
+- The installed daemon client and executable require the reset public kernel
+  package.
+- Tests and CI validate the nine-method local product and isolated installed
+  package boundary rather than migration compatibility.
+- Reintroducing a removed product domain requires a new explicit breaking ADR
+  that supersedes this decision.
