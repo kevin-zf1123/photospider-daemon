@@ -195,7 +195,7 @@ struct Server::Impl final {
   /**
    * @brief Constructs service and takes ownership of a bound listener.
    * @param config Validated fixed configuration.
-   * @param listener Bound restricted listener descriptor.
+   * @param listener Bound descriptor and exact pathname-generation guard.
    * @throws std::bad_alloc If service/handler storage allocation or the
    * private test-runtime construction hook fails that way.
    * @throws std::system_error If service worker creation fails.
@@ -204,8 +204,10 @@ struct Server::Impl final {
    * @note The parameter retains RAII ownership through every throwing step;
    * only complete construction transfers the descriptor to `stop()`.
    */
-  Impl(ServerConfig config, UniqueDescriptor listener)
-      : config(std::move(config)), service(this->config.service) {
+  Impl(ServerConfig config, BoundUnixListener listener)
+      : config(std::move(config)),
+        service(this->config.service),
+        socket_node(std::move(listener.socket_node)) {
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
     if (this->config.construction_hook) {
       this->config.construction_hook(
@@ -213,18 +215,19 @@ struct Server::Impl final {
     }
 #endif
     handlers.reserve(this->config.maximum_active_connections);
-    listener_fd.store(listener.release(), std::memory_order_release);
+    listener_fd.store(listener.descriptor.release(), std::memory_order_release);
   }
 
   /**
    * @brief Closes all transport state and joins every handler.
    * @throws Nothing.
-   * @note The socket node is removed only when it is still a socket.
+   * @note The socket node is removed only when its fixed-parent device/inode
+   * generation still matches this instance.
    */
   ~Impl() noexcept {
     stop();
     join_handlers();
-    remove_socket_node(config.socket_path);
+    socket_node.remove();
   }
 
   /**
@@ -369,6 +372,8 @@ struct Server::Impl final {
   ServerConfig config;
   /** @brief Empty-at-start in-memory orchestration service. */
   Service service;
+  /** @brief Exact bound socket pathname-generation cleanup ownership. */
+  SocketNodeGuard socket_node;
   /** @brief Listener descriptor atomically closed by stop. */
   std::atomic<int> listener_fd{-1};
   /** @brief Monotonic shutdown flag. */
@@ -398,23 +403,17 @@ Server::Server(ServerConfig config) {
       config.maximum_active_connections > 4096U) {
     throw std::invalid_argument("local server configuration is invalid");
   }
-  const std::string socket_path = config.socket_path;
   auto listener =
       create_unix_listener(config.socket_path, config.listen_backlog);
   if (!listener.ok()) {
     throw std::runtime_error(listener.status().message);
   }
-  try {
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
-    if (config.construction_hook) {
-      config.construction_hook(ServerConstructionStage::AfterListenerBind);
-    }
-#endif
-    impl_ = std::make_unique<Impl>(std::move(config), listener.take_value());
-  } catch (...) {
-    remove_socket_node(socket_path);
-    throw;
+  if (config.construction_hook) {
+    config.construction_hook(ServerConstructionStage::AfterListenerBind);
   }
+#endif
+  impl_ = std::make_unique<Impl>(std::move(config), listener.take_value());
 }
 
 /**
@@ -483,13 +482,13 @@ Status Server::run() {
       }
       impl_->stop();
       impl_->join_handlers();
-      remove_socket_node(impl_->config.socket_path);
+      impl_->socket_node.remove();
       throw;
     }
   }
   impl_->stop();
   impl_->join_handlers();
-  remove_socket_node(impl_->config.socket_path);
+  impl_->socket_node.remove();
   return outcome;
 }
 

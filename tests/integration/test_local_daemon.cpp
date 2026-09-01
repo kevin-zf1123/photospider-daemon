@@ -348,7 +348,7 @@ ConstructionFailureObservation observe_construction_failure(
   observation.descriptor_released = descriptor_after == descriptor_before;
 
   if (!observation.socket_node_removed) {
-    ps::ipc::internal::remove_socket_node(path);
+    ::unlink(path.c_str());
   }
   if (!observation.descriptor_released) {
     ::close(descriptor_before);

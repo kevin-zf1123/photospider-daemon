@@ -67,8 +67,10 @@ struct ServerConfig final {
 /**
  * @brief Same-user Unix-domain IPC server for the exact v3 method surface.
  *
- * @note Construction binds the socket. `run` blocks in accept until shutdown;
- * destruction closes connections, joins handlers, and removes the socket node.
+ * @note Construction rejects every existing pathname and binds only an absent
+ * entry. `run` blocks in accept until shutdown; destruction closes
+ * connections, joins handlers, and removes the node only while its captured
+ * device/inode generation still matches.
  */
 class Server final {
  public:
@@ -81,7 +83,9 @@ class Server final {
    * @throws std::system_error If bounded worker creation fails.
    * @throws Any other exception raised by a noninstalled test-runtime
    * construction hook when that private variant is enabled.
-   * @note Any failure after bind removes the socket node before propagating.
+   * @note Any failure after bind conditionally removes only the captured
+   * socket generation before propagating. A pre-existing entry is never
+   * reclaimed, including a stale socket.
    */
   explicit Server(ServerConfig config);
 
