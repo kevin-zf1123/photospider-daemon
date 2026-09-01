@@ -196,6 +196,7 @@ if(BUILD_TESTING)
   target_include_directories(test_photospiderd_signals PRIVATE src/lib tests)
   target_link_libraries(test_photospiderd_signals
                         PRIVATE photospider_daemon_client)
+  add_dependencies(test_photospiderd_signals photospiderd)
   target_compile_definitions(
     test_photospiderd_signals
     PRIVATE PS_PHOTOSPIDERD_PATH="$<TARGET_FILE:photospiderd>")
@@ -241,6 +242,7 @@ if(BUILD_TESTING)
   add_test(NAME test_ipc_codec COMMAND test_ipc_codec)
   add_test(NAME test_sigpipe_transport COMMAND test_sigpipe_transport)
   add_test(NAME test_local_daemon COMMAND test_local_daemon)
+  set_tests_properties(test_local_daemon PROPERTIES TIMEOUT 120)
   add_test(NAME test_socket_ownership COMMAND test_socket_ownership)
   add_test(NAME test_photospiderd_sigint COMMAND test_photospiderd_signals sigint)
   add_test(NAME test_photospiderd_sigterm_delayed

@@ -27,7 +27,10 @@ never a sibling source target or private kernel include path.
 - Server tests cover the positive active-handler bound, typed backpressure,
   sequential runtime reaping, exception fencing, shutdown join, and
   deterministic post-bind construction failures with descriptor/node cleanup
-  plus same-path rebinding.
+  plus same-path rebinding. Every asynchronous Server test uses a fail-safe
+  run guard that requests stop and joins on assertion return or exception.
+  Handler-count assertions first wait for active zero and drive one explicit
+  accept-loop reap rather than relying on elapsed time alone.
 - Real `photospiderd` subprocess tests send `SIGINT`, send `SIGTERM` after a
   five-second cooperative Job reaches Running, and invoke `daemon.shutdown`.
   They require bounded `exit(0)`, generation-checked socket removal, and
@@ -77,8 +80,12 @@ cmake --build <tsan-build> -j
 ctest --test-dir <tsan-build> --output-on-failure
 ```
 
-The CI workflow keeps independent ASAN and TSAN jobs. Record a platform or
-runtime limitation as a limitation, never as a successful sanitizer result.
+The CI workflow keeps independent ASAN and TSAN jobs with a ten-minute job
+bound. `test_local_daemon` also has a 120-second CTest timeout, far below the
+hosted runner watchdog while leaving proportional TSAN headroom. A timeout is
+only a final fail-fast boundary; deterministic lifecycle settlement and RAII
+teardown remain the root fix. Record a platform or runtime limitation as a
+limitation, never as a successful sanitizer result.
 
 ## Manual frame/codec fuzzing
 

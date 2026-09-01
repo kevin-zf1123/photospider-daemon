@@ -8,7 +8,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <future>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -20,6 +19,7 @@
 #include "orchestration/service.hpp"
 #include "server/server.hpp"
 #include "support/exception_fence_faults.hpp"
+#include "support/server_run_guard.hpp"
 #include "support/test_support.hpp"
 
 namespace internal = ps::ipc::internal;
@@ -64,17 +64,6 @@ std::string socket_path() {
   static std::atomic<std::uint32_t> sequence{0U};
   return "/tmp/psd-fence-" + std::to_string(::getpid()) + "-" +
          std::to_string(sequence.fetch_add(1U)) + ".sock";
-}
-
-/**
- * @brief Starts exactly one blocking server accept loop.
- * @param server Bound server that outlives the returned future.
- * @return Asynchronous run status.
- * @throws std::bad_alloc If asynchronous state allocation fails.
- * @throws std::system_error If the test thread cannot start.
- */
-std::future<ps::Status> start_server(internal::Server* server) {
-  return std::async(std::launch::async, [server] { return server->run(); });
 }
 
 /**
@@ -233,24 +222,24 @@ bool handler_double_fault_case(test::ExceptionFenceFaultAction action,
                                2U,
                                {},
                                {}});
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
     auto connection = internal::connect_unix_socket(path);
     if (!connection.ok()) {
       server.request_stop();
-      static_cast<void>(server_result.get());
+      static_cast<void>(server_run.join());
       return false;
     }
     auto frame = internal::read_frame(connection.value().get());
     if (!frame.ok()) {
       server.request_stop();
-      static_cast<void>(server_result.get());
+      static_cast<void>(server_run.join());
       return false;
     }
     auto response = internal::decode_protocol_error(frame.value());
     auto closed = internal::read_frame(connection.value().get());
     const bool handler_finished = wait_handler_count(&server, 0U);
     server.request_stop();
-    const ps::Status run_status = server_result.get();
+    const ps::Status run_status = server_run.join();
     const bool passed =
         response.ok() && response.value().request_id == 0U &&
         response.value().method == internal::Method::DaemonInfo &&
@@ -342,11 +331,11 @@ bool registration_failure_case(ProtocolFailureMode mode) {
                                2U,
                                {},
                                {}});
-    auto server_result = start_server(&server);
+    ps::ipc::test::ServerRunGuard server_run(&server);
     auto connection = internal::connect_unix_socket(path);
     if (!connection.ok()) {
       server.request_stop();
-      static_cast<void>(server_result.get());
+      static_cast<void>(server_run.join());
       return false;
     }
     auto frame = internal::read_frame(connection.value().get());
@@ -367,7 +356,7 @@ bool registration_failure_case(ProtocolFailureMode mode) {
     }
     const bool handler_finished = wait_handler_count(&server, 0U);
     server.request_stop();
-    const ps::Status run_status = server_result.get();
+    const ps::Status run_status = server_run.join();
     cleanup_passed = handler_finished && server.active_handler_count() == 0U &&
                      server.active_connection_count_for_test() == 0U &&
                      server.retained_handler_count() == 0U && run_status.ok() &&

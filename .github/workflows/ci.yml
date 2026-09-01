@@ -48,6 +48,7 @@ jobs:
           --output-junit daemon-ctest.xml
 
   sanitizers:
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
