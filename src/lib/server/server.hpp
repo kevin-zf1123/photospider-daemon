@@ -144,6 +144,17 @@ class Server final {
    */
   [[nodiscard]] std::size_t retained_handler_count() const noexcept;
 
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+  /**
+   * @brief Returns the private active-descriptor registry size for tests.
+   * @return Exact registered descriptor count, or maximum size on lock
+   * failure.
+   * @throws Nothing.
+   * @note This method exists only in the noninstalled exception-test variant.
+   */
+  [[nodiscard]] std::size_t active_connection_count_for_test() const noexcept;
+#endif
+
  private:
   /** @brief Opaque listener, connection handlers, and service. */
   struct Impl;

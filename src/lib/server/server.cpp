@@ -16,8 +16,25 @@
 #include "ipc/frame.hpp"
 #include "ipc/unix_socket.hpp"
 
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#include "support/exception_fence_faults.hpp"
+#endif
+
 namespace ps::ipc::internal {
 namespace {
+
+/**
+ * @brief Assigns one non-success status without allocating a diagnostic.
+ * @param status Status storage to overwrite in place.
+ * @param code Intended non-success category; `Ok` is normalized to `Internal`.
+ * @throws Nothing.
+ * @note Existing diagnostic storage is cleared in place and may retain
+ * capacity; no diagnostic text is required by the wire failure contract.
+ */
+void set_failure_without_allocation(Status& status, ErrorCode code) noexcept {
+  status.code = code == ErrorCode::Ok ? ErrorCode::Internal : code;
+  status.message.clear();
+}
 
 /**
  * @brief Sends one best-effort typed pre-routing failure response.
@@ -42,12 +59,64 @@ void write_protocol_failure(
               static_cast<std::ptrdiff_t>(progress->payload_prefix_size));
       request_payload = &prefix;
     }
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+    test::hit_exception_fence_fault(
+        test::ExceptionFenceFaultPoint::ProtocolFailureEncode);
+#endif
     auto encoded = encode_protocol_error(status, request_payload);
     if (encoded.ok()) {
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::ProtocolFailureWrite);
+#endif
       static_cast<void>(write_frame(descriptor, encoded.value()));
     }
   } catch (...) {
   }
+}
+
+/**
+ * @brief Attempts one typed no-diagnostic protocol failure.
+ * @param descriptor Connected local stream descriptor.
+ * @param code Intended non-success category.
+ * @throws Nothing.
+ * @note The response uses recovered correlation only when payload/progress is
+ * supplied by the caller; with neither, encoding uses the documented
+ * `request_id=0`, `method=daemon.info` sentinel. Encoding or writing may fail,
+ * but the complete attempt stays inside an exception fence.
+ */
+void write_protocol_failure_code(int descriptor, ErrorCode code) noexcept {
+  Status status;
+  set_failure_without_allocation(status, code);
+  write_protocol_failure(descriptor, status);
+}
+
+/**
+ * @brief Fences diagnostic construction for one handler exception response.
+ * @param descriptor Connected local stream descriptor.
+ * @param code Typed catch category preserved even if diagnostics cannot be
+ * allocated.
+ * @param diagnostic Optional human-readable text copied on the primary path.
+ * @param progress Fixed correlation prefix retained by the failed frame read.
+ * @throws Nothing.
+ * @note A secondary exception leaves an empty diagnostic but never changes the
+ * failure to success. Encoding and writing remain separately best-effort.
+ */
+void write_handler_failure(int descriptor, ErrorCode code,
+                           const char* diagnostic,
+                           const FrameReadProgress* progress) noexcept {
+  Status status;
+  set_failure_without_allocation(status, code);
+  try {
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+    test::hit_exception_fence_fault(
+        test::ExceptionFenceFaultPoint::HandlerFailureStatus);
+#endif
+    status = Status::failure(code, diagnostic ? diagnostic : "");
+  } catch (...) {
+    set_failure_without_allocation(status, code);
+  }
+  write_protocol_failure(descriptor, status, nullptr, progress);
 }
 
 /**
@@ -168,12 +237,21 @@ struct Server::Impl final {
     bool registered = false;
     try {
       std::lock_guard<std::mutex> lock(connections_mutex);
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::ConnectionRegistration);
+#endif
       active_connections.emplace(descriptor, descriptor);
       registered = true;
     } catch (...) {
+      write_protocol_failure_code(descriptor, ErrorCode::ResourceExhausted);
       return;
     }
     try {
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::HandlerPrimary);
+#endif
       if (config.handler_entry_hook) {
         config.handler_entry_hook();
       }
@@ -206,21 +284,16 @@ struct Server::Impl final {
         }
       }
     } catch (const std::bad_alloc&) {
-      write_protocol_failure(
-          descriptor,
-          Status::failure(ErrorCode::ResourceExhausted,
-                          "connection handler allocation failed"),
-          nullptr, &frame_progress);
+      write_handler_failure(descriptor, ErrorCode::ResourceExhausted,
+                            "connection handler allocation failed",
+                            &frame_progress);
     } catch (const std::exception& error) {
-      write_protocol_failure(descriptor,
-                             Status::failure(ErrorCode::Internal, error.what()),
-                             nullptr, &frame_progress);
+      write_handler_failure(descriptor, ErrorCode::Internal, error.what(),
+                            &frame_progress);
     } catch (...) {
-      write_protocol_failure(
-          descriptor,
-          Status::failure(ErrorCode::Internal,
-                          "connection handler raised an exception"),
-          nullptr, &frame_progress);
+      write_handler_failure(descriptor, ErrorCode::Internal,
+                            "connection handler raised an exception",
+                            &frame_progress);
     }
     if (registered) {
       std::lock_guard<std::mutex> lock(connections_mutex);
@@ -450,5 +523,23 @@ std::size_t Server::retained_handler_count() const noexcept {
   std::lock_guard<std::mutex> lock(impl_->handlers_mutex);
   return impl_->handlers.size();
 }
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+/**
+ * @brief Implements private active-descriptor observation for fault tests.
+ * @copydetails Server::active_connection_count_for_test
+ */
+std::size_t Server::active_connection_count_for_test() const noexcept {
+  if (!impl_) {
+    return 0U;
+  }
+  try {
+    std::lock_guard<std::mutex> lock(impl_->connections_mutex);
+    return impl_->active_connections.size();
+  } catch (...) {
+    return static_cast<std::size_t>(-1);
+  }
+}
+#endif
 
 }  // namespace ps::ipc::internal

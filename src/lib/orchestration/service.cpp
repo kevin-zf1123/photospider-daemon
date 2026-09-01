@@ -18,12 +18,67 @@
 #include "photospider/execution/execution.hpp"
 #include "photospider/plugin/operation_registry.hpp"
 
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+#include "support/exception_fence_faults.hpp"
+#endif
+
 #ifndef PHOTOSPIDER_DAEMON_VERSION
 #define PHOTOSPIDER_DAEMON_VERSION "0.2.0"
 #endif
 
 namespace ps::ipc::internal {
 namespace {
+
+/**
+ * @brief Converts a response to one allocation-free canonical failure.
+ * @param response Correlated response whose success-only payload is discarded.
+ * @param code Intended non-success category; `Ok` is normalized to `Internal`.
+ * @throws Nothing.
+ * @note Request correlation and method are preserved. Every string/container is
+ * cleared in place, so the fallback does not allocate while removing any
+ * partially populated method-specific success payload.
+ */
+void fail_response_without_allocation(Response& response,
+                                      ErrorCode code) noexcept {
+  response.status.code = code == ErrorCode::Ok ? ErrorCode::Internal : code;
+  response.status.message.clear();
+
+  response.session_id.instance = 0U;
+  response.session_id.value = 0U;
+  response.job_id.instance = 0U;
+  response.job_id.value = 0U;
+
+  response.job_status.job_id.instance = 0U;
+  response.job_status.job_id.value = 0U;
+  response.job_status.session_id.instance = 0U;
+  response.job_status.session_id.value = 0U;
+  response.job_status.state = JobState::Queued;
+  response.job_status.outcome.code = ErrorCode::Ok;
+  response.job_status.outcome.message.clear();
+
+  response.execution_result.values.clear();
+  auto& diagnostics = response.execution_result.diagnostics;
+  diagnostics.execute_us = 0U;
+  diagnostics.selected_backends.clear();
+  diagnostics.transfer_count = 0U;
+  diagnostics.transfer_bytes = 0U;
+  diagnostics.peak_live_bytes = 0U;
+  diagnostics.fallback_reasons.clear();
+  diagnostics.operation_timings.clear();
+  diagnostics.plan_digest.clear();
+  diagnostics.result_digest.clear();
+
+  response.daemon_info.protocol_version = 0U;
+  response.daemon_info.instance_id = 0U;
+  response.daemon_info.service_version.clear();
+  response.daemon_info.transport.clear();
+  response.daemon_info.methods.clear();
+  response.daemon_info.active_sessions = 0U;
+  response.daemon_info.active_jobs = 0U;
+  response.daemon_info.maximum_concurrency = 0U;
+  response.daemon_info.maximum_sessions = 0U;
+  response.shutdown_after_write = false;
+}
 
 /** @brief Immutable namespace record owning one kernel GraphContext. */
 struct SessionRecord final {
@@ -815,24 +870,46 @@ Response Service::dispatch(const Request& request) noexcept {
         response.shutdown_after_write = true;
         break;
     }
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+    test::hit_exception_fence_fault(
+        test::ExceptionFenceFaultPoint::DispatchPrimary);
+#endif
   } catch (const std::bad_alloc&) {
+    fail_response_without_allocation(response, ErrorCode::ResourceExhausted);
     try {
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::DispatchFailureStatus);
+#endif
       response.status =
           Status::failure(ErrorCode::ResourceExhausted,
                           "daemon orchestration allocation failed");
     } catch (...) {
+      fail_response_without_allocation(response, ErrorCode::ResourceExhausted);
     }
   } catch (const std::exception& error) {
+    fail_response_without_allocation(response, ErrorCode::Internal);
     try {
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::DispatchFailureStatus);
+#endif
       response.status = Status::failure(ErrorCode::Internal, error.what());
     } catch (...) {
+      fail_response_without_allocation(response, ErrorCode::Internal);
     }
   } catch (...) {
+    fail_response_without_allocation(response, ErrorCode::Internal);
     try {
+#if defined(PHOTOSPIDER_DAEMON_TEST_EXCEPTION_FENCES)
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::DispatchFailureStatus);
+#endif
       response.status = Status::failure(
           ErrorCode::Internal,
           "daemon orchestration raised a nonstandard exception");
     } catch (...) {
+      fail_response_without_allocation(response, ErrorCode::Internal);
     }
   }
   return response;
