@@ -1,12 +1,15 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-
+find_dependency(Photospider 0.2 CONFIG COMPONENTS kernel)
 find_dependency(Threads)
-find_dependency(Photospider 0.1.0 EXACT CONFIG REQUIRED
-  COMPONENTS operation_runtime)
 
-include("${CMAKE_CURRENT_LIST_DIR}/PhotospiderDaemonTargets.cmake")
+set(PhotospiderDaemon_client_FOUND TRUE)
+foreach(_PhotospiderDaemon_component IN LISTS PhotospiderDaemon_FIND_COMPONENTS)
+  if(NOT _PhotospiderDaemon_component STREQUAL "client")
+    set(PhotospiderDaemon_${_PhotospiderDaemon_component}_FOUND FALSE)
+  endif()
+endforeach()
 
-set(PhotospiderDaemon_FOUND TRUE)
 check_required_components(PhotospiderDaemon)
+include("${CMAKE_CURRENT_LIST_DIR}/PhotospiderDaemonTargets.cmake")

@@ -1,8 +1,7 @@
 #include "ipc/unix_socket.hpp"
 
-#include <fcntl.h>
-#include <poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -16,442 +15,236 @@ namespace ps::ipc::internal {
 namespace {
 
 /**
- * @brief Milliseconds between checks of a latched connect interruption.
- * @throws Nothing; this is immutable compile-time policy.
- * @note Ten milliseconds bounds stop observation during local connect waits;
- *       repeated slices intentionally impose no total connection timeout.
+ * @brief Validates and copies one filesystem path into `sockaddr_un`.
+ * @param path Exact local socket filesystem path.
+ * @return Populated address or typed invalid-argument failure.
+ * @throws std::bad_alloc If failure diagnostic allocation fails.
+ * @note The terminating null byte must fit in `sun_path`.
  */
-constexpr int kConnectPollSliceMilliseconds = 10;
-
-/**
- * @brief Marks one newly created client descriptor close-on-exec.
- *
- * @param fd Socket descriptor to protect from fork/exec leakage.
- * @param message Receives an `fcntl` diagnostic on failure.
- * @return True when `FD_CLOEXEC` is installed.
- * @throws std::bad_alloc if diagnostic construction fails.
- */
-bool configure_close_on_exec(int fd, std::string* message) {
-  const int flags = ::fcntl(fd, F_GETFD, 0);
-  if (flags < 0 || ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != 0) {
-    *message = std::string("socket FD_CLOEXEC failed: ") + std::strerror(errno);
-    return false;
-  }
-  return true;
-}
-
-/**
- * @brief Reports whether one nonblocking Unix connect remains in flight.
- * @param error_number Connect or `SO_ERROR` errno value.
- * @return True for portable pending-connect classifications.
- * @throws Nothing.
- */
-bool connect_pending(int error_number) noexcept {
-  return error_number == EINPROGRESS || error_number == EALREADY;
-}
-
-/**
- * @brief Waits one bounded slice before retrying Linux AF_UNIX `EAGAIN`.
- * @param should_stop Latched lifecycle predicate.
- * @param message Receives interruption or poll failure diagnostics.
- * @return True when the same unconnected fd may retry local connect.
- * @throws std::bad_alloc if diagnostics allocate, or whatever the predicate
- *         throws.
- * @note Linux returns `EAGAIN` before creating an in-flight connection when a
- *       listener backlog is full. This delay never writes a frame and has no
- *       total timeout.
- */
-bool wait_connect_retry_slice(const std::function<bool()>& should_stop,
-                              std::string* message) {
-  while (true) {
-    if (should_stop()) {
-      *message = "connect interrupted";
-      return false;
-    }
-    const int poll_result = ::poll(nullptr, 0, kConnectPollSliceMilliseconds);
-    if (poll_result >= 0) {
-      return true;
-    }
-    if (errno != EINTR) {
-      const int poll_error = errno;
-      *message =
-          std::string("connect poll failed: ") + std::strerror(poll_error);
-      return false;
-    }
-  }
-}
-
-/**
- * @brief Prepared filesystem Unix address and its exact kernel byte length.
- * @throws Nothing after construction.
- */
-struct PreparedUnixAddress {
-  /** @brief Zero-initialized address with family and path populated. */
+Result<sockaddr_un> socket_address(const std::string& path) {
   sockaddr_un address{};
-
-  /** @brief Exact address bytes through the terminating path NUL. */
-  socklen_t length = 0;
-};
-
-/**
- * @brief Mutable state for one logical nonblocking connection attempt.
- * @throws Nothing after construction.
- * @note This state never owns or closes the socket descriptor; helper-side
- *       diagnostic assignment can throw `std::bad_alloc`.
- */
-struct ConnectAttemptState {
-  /** @brief Whether the logical connection has completed successfully. */
-  bool connected = false;
-
-  /** @brief Whether `EAGAIN` or a pending connect has already been observed. */
-  bool transient_connect_seen = false;
-
-  /** @brief Empty while work may continue, otherwise the terminal diagnostic.
-   */
-  std::string outcome_message;
-};
-
-/**
- * @brief Outcome of one pending-connect writable/SO_ERROR wait loop.
- * @throws Nothing.
- */
-enum class PendingConnectOutcome {
-  /** @brief The socket completed its logical connection. */
-  Connected,
-
-  /** @brief Linux AF_UNIX reported no in-flight connect; retry same-fd connect.
-   */
-  RetryConnect,
-
-  /** @brief Interruption or a terminal system error ended the attempt. */
-  Failed,
-};
-
-/**
- * @brief Validates and encodes one absolute filesystem Unix socket address.
- * @param socket_path Candidate absolute socket path.
- * @param prepared Receives the zero-padded address and exact byte length.
- * @param message Receives the stable validation diagnostic on failure.
- * @return True when the path fits and was copied into `prepared`.
- * @throws std::bad_alloc if diagnostic assignment allocates.
- * @note The helper writes no socket state and does not retain `socket_path`.
- */
-bool prepare_unix_address(const std::string& socket_path,
-                          PreparedUnixAddress* prepared, std::string* message) {
-  if (socket_path.empty() || socket_path.front() != '/' ||
-      socket_path.find('\0') != std::string::npos) {
-    *message = "Unix socket path must be absolute";
-    return false;
+  if (path.empty() || path.size() >= sizeof(address.sun_path)) {
+    return Result<sockaddr_un>(Status::failure(
+        ErrorCode::InvalidArgument, "Unix-domain socket path is invalid"));
   }
-  if (socket_path.size() + 1 > sizeof(prepared->address.sun_path)) {
-    *message = "Unix socket path exceeds sun_path capacity";
-    return false;
-  }
-
-  prepared->address.sun_family = AF_UNIX;
-  std::memcpy(prepared->address.sun_path, socket_path.c_str(),
-              socket_path.size() + 1);
-  prepared->length = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) +
-                                            socket_path.size() + 1);
-  return true;
+  address.sun_family = AF_UNIX;
+  std::memcpy(address.sun_path, path.c_str(), path.size() + 1U);
+  return Result<sockaddr_un>(address);
 }
 
 /**
- * @brief Enables temporary nonblocking mode and captures original flags.
- * @param fd Borrowed configured socket descriptor.
- * @param original_flags Receives the flags that must later be restored.
- * @param message Receives the stable `fcntl` diagnostic on failure.
- * @return True when `O_NONBLOCK` was installed.
- * @throws std::bad_alloc if diagnostic construction fails.
- * @note The helper never owns or closes `fd`.
+ * @brief Builds one errno-backed local transport status.
+ * @param action Stable description of the failed operation.
+ * @return Internal failure containing the current errno diagnostic.
+ * @throws std::bad_alloc If diagnostic allocation fails.
+ * @note Call immediately after the failing system call.
  */
-bool enable_nonblocking_connect(int fd, int* original_flags,
-                                std::string* message) {
-  *original_flags = ::fcntl(fd, F_GETFL, 0);
-  if (*original_flags < 0 ||
-      ::fcntl(fd, F_SETFL, *original_flags | O_NONBLOCK) != 0) {
-    *message =
-        std::string("socket nonblocking setup failed: ") + std::strerror(errno);
-    return false;
-  }
-  return true;
+Status errno_status(const std::string& action) {
+  return Status::failure(ErrorCode::Internal,
+                         action + ": " + std::strerror(errno));
 }
 
 /**
- * @brief Records successful kernel completion unless lifecycle stop won.
- * @param should_stop Latched lifecycle predicate.
- * @param state Mutable logical-attempt state.
- * @return Nothing.
- * @throws std::bad_alloc if interruption diagnostic assignment allocates, or
- *         whatever the supplied predicate throws.
- * @note The caller invokes this only after connect or `SO_ERROR` reports
- *       success; no descriptor ownership changes occur.
+ * @brief Verifies a connected peer belongs to the current effective uid.
+ * @param descriptor Connected local stream descriptor.
+ * @return Success only after a supported platform peer-uid check passes.
+ * @throws std::bad_alloc If a failure diagnostic allocation fails.
+ * @note Unsupported platforms fail closed instead of accepting an unchecked
+ * peer.
  */
-void record_connect_completion(const std::function<bool()>& should_stop,
-                               ConnectAttemptState* state) {
-  if (should_stop()) {
-    state->outcome_message = "connect interrupted";
-  } else {
-    state->connected = true;
+Status verify_same_user(int descriptor) {
+#if defined(__APPLE__) || defined(__FreeBSD__)
+  uid_t uid = 0;
+  gid_t gid = 0;
+  if (::getpeereid(descriptor, &uid, &gid) != 0) {
+    return errno_status("could not read local peer identity");
   }
-}
-
-/**
- * @brief Waits for one pending nonblocking connect to finish or require retry.
- * @param fd Borrowed socket with an in-flight nonblocking connect.
- * @param should_stop Latched lifecycle predicate checked around every wait.
- * @param state Mutable logical-attempt state receiving completion/diagnostic.
- * @return Connected, same-fd retry, or terminal failure.
- * @throws std::bad_alloc if diagnostic construction fails, or whatever the
- *         supplied predicate throws.
- * @note The helper polls in bounded slices, preserves exact `SO_ERROR`
- *       classification, and never closes, reconnects, or writes through `fd`.
- */
-PendingConnectOutcome wait_pending_connect(
-    int fd, const std::function<bool()>& should_stop,
-    ConnectAttemptState* state) {
-  while (!state->connected && state->outcome_message.empty()) {
-    if (should_stop()) {
-      state->outcome_message = "connect interrupted";
-      return PendingConnectOutcome::Failed;
-    }
-    pollfd pending{fd, POLLOUT, 0};
-    const int poll_result = ::poll(&pending, 1, kConnectPollSliceMilliseconds);
-    if (poll_result == 0 || (poll_result < 0 && errno == EINTR)) {
-      continue;
-    }
-    if (poll_result < 0) {
-      const int poll_error = errno;
-      state->outcome_message =
-          std::string("connect poll failed: ") + std::strerror(poll_error);
-      return PendingConnectOutcome::Failed;
-    }
-    if (should_stop()) {
-      state->outcome_message = "connect interrupted";
-      return PendingConnectOutcome::Failed;
-    }
-
-    int socket_error = 0;
-    socklen_t socket_error_size = sizeof(socket_error);
-    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error,
-                     &socket_error_size) != 0) {
-      const int option_error = errno;
-      state->outcome_message = std::string("connect SO_ERROR failed: ") +
-                               std::strerror(option_error);
-      return PendingConnectOutcome::Failed;
-    }
-    if (socket_error == 0) {
-      record_connect_completion(should_stop, state);
-      return state->connected ? PendingConnectOutcome::Connected
-                              : PendingConnectOutcome::Failed;
-    }
-    if (socket_error == EAGAIN) {
-      return PendingConnectOutcome::RetryConnect;
-    }
-    if (!connect_pending(socket_error)) {
-      state->outcome_message =
-          std::string("connect failed: ") + std::strerror(socket_error);
-      return PendingConnectOutcome::Failed;
-    }
+  static_cast<void>(gid);
+  if (uid != ::geteuid()) {
+    return Status::failure(ErrorCode::InvalidArgument,
+                           "local peer uid does not match daemon uid");
   }
-  return state->connected ? PendingConnectOutcome::Connected
-                          : PendingConnectOutcome::Failed;
-}
-
-/**
- * @brief Executes one logical same-fd connection including local retries.
- * @param fd Borrowed socket already placed in nonblocking mode.
- * @param prepared Validated address bytes for every injected attempt.
- * @param should_stop Latched lifecycle predicate.
- * @param connect_attempt Injected connect-compatible system-call seam.
- * @return Terminal connection state and any stable diagnostic.
- * @throws std::bad_alloc if diagnostic storage fails, or whatever either
- *         injected callable throws.
- * @note `EAGAIN` retries only an unstarted local AF_UNIX connection; pending
- *       connections complete through poll/`SO_ERROR`. No frame is retried and
- *       descriptor ownership remains with the caller.
- */
-ConnectAttemptState run_nonblocking_connect(
-    int fd, const PreparedUnixAddress& prepared,
-    const std::function<bool()>& should_stop,
-    const std::function<int(int, const void*, std::size_t)>& connect_attempt) {
-  ConnectAttemptState state;
-  while (!state.connected && state.outcome_message.empty()) {
-    if (should_stop()) {
-      state.outcome_message = "connect interrupted";
-      break;
-    }
-    const int connect_result = connect_attempt(
-        fd, static_cast<const void*>(&prepared.address), prepared.length);
-    const int connect_error = connect_result == 0 ? 0 : errno;
-    if (connect_result == 0 ||
-        (connect_error == EISCONN && state.transient_connect_seen)) {
-      record_connect_completion(should_stop, &state);
-      break;
-    }
-    if (connect_error == EAGAIN) {
-      state.transient_connect_seen = true;
-      if (!wait_connect_retry_slice(should_stop, &state.outcome_message)) {
-        break;
-      }
-      continue;
-    }
-    if (!connect_pending(connect_error)) {
-      state.outcome_message =
-          std::string("connect failed: ") + std::strerror(connect_error);
-      break;
-    }
-    state.transient_connect_seen = true;
-    if (wait_pending_connect(fd, should_stop, &state) ==
-            PendingConnectOutcome::RetryConnect &&
-        !wait_connect_retry_slice(should_stop, &state.outcome_message)) {
-      break;
-    }
+#elif defined(__linux__)
+  struct ucred credentials{};
+  socklen_t size = sizeof(credentials);
+  if (::getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &credentials, &size) !=
+      0) {
+    return errno_status("could not read local peer identity");
   }
-  return state;
+  if (credentials.uid != ::geteuid()) {
+    return Status::failure(ErrorCode::InvalidArgument,
+                           "local peer uid does not match daemon uid");
+  }
+#else
+  static_cast<void>(descriptor);
+  return Status::failure(ErrorCode::InvalidArgument,
+                         "local peer uid verification is unavailable");
+#endif
+  return Status::success();
 }
 
 }  // namespace
 
-/** @copydoc UniqueFd::UniqueFd(int) */
-UniqueFd::UniqueFd(int fd) noexcept : fd_(fd) {}
-
-/** @copydoc UniqueFd::~UniqueFd */
-UniqueFd::~UniqueFd() {
+/**
+ * @brief Implements exact descriptor teardown.
+ * @copydetails UniqueDescriptor::~UniqueDescriptor
+ */
+UniqueDescriptor::~UniqueDescriptor() noexcept {
   reset();
 }
 
-/** @copydoc UniqueFd::UniqueFd(UniqueFd&&) */
-UniqueFd::UniqueFd(UniqueFd&& other) noexcept : fd_(other.release()) {}
+/**
+ * @brief Implements transfer-only descriptor move construction.
+ * @copydetails UniqueDescriptor::UniqueDescriptor(UniqueDescriptor&&)
+ */
+UniqueDescriptor::UniqueDescriptor(UniqueDescriptor&& other) noexcept
+    : descriptor_(other.release()) {}
 
-/** @copydoc UniqueFd::operator=(UniqueFd&&) */
-UniqueFd& UniqueFd::operator=(UniqueFd&& other) noexcept {
+/**
+ * @brief Implements transfer-only descriptor move assignment.
+ * @copydetails UniqueDescriptor::operator=(UniqueDescriptor&&)
+ */
+UniqueDescriptor& UniqueDescriptor::operator=(
+    UniqueDescriptor&& other) noexcept {
   if (this != &other) {
     reset(other.release());
   }
   return *this;
 }
 
-/** @copydoc UniqueFd::get */
-int UniqueFd::get() const noexcept {
-  return fd_;
+/**
+ * @brief Implements close-then-replace descriptor ownership.
+ * @copydetails UniqueDescriptor::reset
+ */
+void UniqueDescriptor::reset(int descriptor) noexcept {
+  if (descriptor_ >= 0) {
+    ::close(descriptor_);
+  }
+  descriptor_ = descriptor;
 }
 
-/** @copydoc UniqueFd::operator bool */
-UniqueFd::operator bool() const noexcept {
-  return fd_ >= 0;
+/**
+ * @brief Implements ownership release without closing.
+ * @copydetails UniqueDescriptor::release
+ */
+int UniqueDescriptor::release() noexcept {
+  return std::exchange(descriptor_, -1);
 }
 
-/** @copydoc UniqueFd::release */
-int UniqueFd::release() noexcept {
-  const int released = fd_;
-  fd_ = -1;
-  return released;
+/**
+ * @brief Implements one explicit Unix-domain client connection.
+ * @copydetails connect_unix_socket
+ */
+Result<UniqueDescriptor> connect_unix_socket(const std::string& path) {
+  auto address = socket_address(path);
+  if (!address.ok()) {
+    return Result<UniqueDescriptor>(address.status());
+  }
+  UniqueDescriptor descriptor(::socket(AF_UNIX, SOCK_STREAM, 0));
+  if (!descriptor.valid()) {
+    return Result<UniqueDescriptor>(
+        errno_status("could not create local socket"));
+  }
+  if (::connect(descriptor.get(),
+                reinterpret_cast<const sockaddr*>(&address.value()),
+                sizeof(sockaddr_un)) != 0) {
+    return Result<UniqueDescriptor>(
+        errno_status("could not connect local socket"));
+  }
+  return Result<UniqueDescriptor>(std::move(descriptor));
 }
 
-/** @copydoc UniqueFd::reset */
-void UniqueFd::reset(int fd) noexcept {
-  if (fd_ >= 0) {
-    ::close(fd_);
+/**
+ * @brief Implements creation of a restricted same-user listener.
+ * @copydetails create_unix_listener
+ */
+Result<UniqueDescriptor> create_unix_listener(const std::string& path,
+                                              int backlog) {
+  auto address = socket_address(path);
+  if (!address.ok() || backlog <= 0) {
+    return Result<UniqueDescriptor>(
+        address.ok()
+            ? Status::failure(ErrorCode::InvalidArgument,
+                              "Unix-domain listener backlog must be positive")
+            : address.status());
   }
-  fd_ = fd;
+  struct stat existing{};
+  if (::lstat(path.c_str(), &existing) == 0) {
+    if (!S_ISSOCK(existing.st_mode)) {
+      return Result<UniqueDescriptor>(
+          Status::failure(ErrorCode::InvalidArgument,
+                          "listener path exists and is not a socket"));
+    }
+    if (::unlink(path.c_str()) != 0) {
+      return Result<UniqueDescriptor>(errno_status("could not replace socket"));
+    }
+  } else if (errno != ENOENT) {
+    return Result<UniqueDescriptor>(
+        errno_status("could not inspect socket path"));
+  }
+
+  UniqueDescriptor descriptor(::socket(AF_UNIX, SOCK_STREAM, 0));
+  if (!descriptor.valid()) {
+    return Result<UniqueDescriptor>(errno_status("could not create listener"));
+  }
+  if (::bind(descriptor.get(),
+             reinterpret_cast<const sockaddr*>(&address.value()),
+             sizeof(sockaddr_un)) != 0) {
+    return Result<UniqueDescriptor>(
+        errno_status("could not bind local socket"));
+  }
+  if (::chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0) {
+    remove_socket_node(path);
+    return Result<UniqueDescriptor>(
+        errno_status("could not restrict socket mode"));
+  }
+  if (::listen(descriptor.get(), backlog) != 0) {
+    remove_socket_node(path);
+    return Result<UniqueDescriptor>(errno_status("could not listen locally"));
+  }
+  return Result<UniqueDescriptor>(std::move(descriptor));
 }
 
-/** @copydoc configure_no_sigpipe */
-bool configure_no_sigpipe(int fd, std::string* message) {
-#if defined(__APPLE__)
-  int enabled = 1;
-  if (::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) !=
-      0) {
-    *message = std::string("SO_NOSIGPIPE failed: ") + std::strerror(errno);
-    return false;
+/**
+ * @brief Implements same-user connection acceptance.
+ * @copydetails accept_same_user
+ */
+Result<UniqueDescriptor> accept_same_user(int listener) {
+  int descriptor = -1;
+  do {
+    descriptor = ::accept(listener, nullptr, nullptr);
+  } while (descriptor < 0 && errno == EINTR);
+  if (descriptor < 0) {
+    return Result<UniqueDescriptor>(errno_status("local accept failed"));
   }
-#else
-  (void)fd;
-  (void)message;
-#endif
-  return true;
+  UniqueDescriptor owned(descriptor);
+  Status status = verify_same_user(descriptor);
+  if (!status.ok()) {
+    return Result<UniqueDescriptor>(std::move(status));
+  }
+  return Result<UniqueDescriptor>(std::move(owned));
 }
 
-/** @copydoc create_unix_stream_socket */
-UniqueFd create_unix_stream_socket(std::string* message) {
-  UniqueFd socket_fd(::socket(AF_UNIX, SOCK_STREAM, 0));
-  if (!socket_fd) {
-    *message = std::string("socket creation failed: ") + std::strerror(errno);
-    return {};
+/**
+ * @brief Implements best-effort stream interruption.
+ * @copydetails shutdown_descriptor
+ */
+void shutdown_descriptor(int descriptor) noexcept {
+  if (descriptor >= 0) {
+    ::shutdown(descriptor, SHUT_RDWR);
   }
-  if (!configure_no_sigpipe(socket_fd.get(), message) ||
-      !configure_close_on_exec(socket_fd.get(), message)) {
-    return {};
-  }
-  return socket_fd;
 }
 
-/** @copydoc connect_prepared_unix_socket_with_attempt */
-bool connect_prepared_unix_socket_with_attempt(
-    int fd, const std::string& socket_path,
-    const std::function<bool()>& should_stop,
-    const std::function<int(int, const void*, std::size_t)>& connect_attempt,
-    std::string* message) {
-  if (fd < 0 || !should_stop || !connect_attempt || message == nullptr) {
-    return false;
+/**
+ * @brief Implements type-checked socket-node removal.
+ * @copydetails remove_socket_node
+ */
+void remove_socket_node(const std::string& path) noexcept {
+  struct stat existing{};
+  if (!path.empty() && ::lstat(path.c_str(), &existing) == 0 &&
+      S_ISSOCK(existing.st_mode)) {
+    ::unlink(path.c_str());
   }
-  PreparedUnixAddress prepared;
-  if (!prepare_unix_address(socket_path, &prepared, message)) {
-    return false;
-  }
-  int original_flags = 0;
-  if (!enable_nonblocking_connect(fd, &original_flags, message)) {
-    return false;
-  }
-
-  ConnectAttemptState state;
-  try {
-    state = run_nonblocking_connect(fd, prepared, should_stop, connect_attempt);
-  } catch (...) {
-    (void)::fcntl(fd, F_SETFL, original_flags);
-    throw;
-  }
-
-  if (::fcntl(fd, F_SETFL, original_flags) != 0) {
-    *message =
-        std::string("socket blocking restore failed: ") + std::strerror(errno);
-    return false;
-  }
-  if (state.connected && should_stop()) {
-    *message = "connect interrupted";
-    return false;
-  }
-  if (!state.connected) {
-    *message = std::move(state.outcome_message);
-    return false;
-  }
-  return true;
-}
-
-/** @copydoc connect_prepared_unix_socket */
-bool connect_prepared_unix_socket(int fd, const std::string& socket_path,
-                                  const std::function<bool()>& should_stop,
-                                  std::string* message) {
-  return connect_prepared_unix_socket_with_attempt(
-      fd, socket_path, should_stop,
-      [](int socket_fd, const void* address, std::size_t address_length) {
-        return ::connect(socket_fd, static_cast<const sockaddr*>(address),
-                         static_cast<socklen_t>(address_length));
-      },
-      message);
-}
-
-/** @copydoc connect_unix_socket */
-UniqueFd connect_unix_socket(const std::string& socket_path,
-                             std::string* message) {
-  UniqueFd socket_fd = create_unix_stream_socket(message);
-  if (!socket_fd ||
-      !connect_prepared_unix_socket(
-          socket_fd.get(), socket_path, [] { return false; }, message)) {
-    return {};
-  }
-  return socket_fd;
 }
 
 }  // namespace ps::ipc::internal

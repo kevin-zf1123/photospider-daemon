@@ -1,196 +1,136 @@
 #pragma once
 
-#include <cstddef>
-#include <functional>
 #include <string>
+
+#include "photospider/core/status.hpp"
 
 namespace ps::ipc::internal {
 
 /**
- * @brief Move-only RAII owner for one Unix descriptor.
+ * @brief Move-only exact ownership of one POSIX descriptor.
  *
- * @throws Nothing.
- * @note The class owns only descriptor lifecycle; protocol reads and writes are
- *       performed by the frame layer.
+ * @note Reset/destruction closes at most once.
  */
-class UniqueFd {
+class UniqueDescriptor final {
  public:
   /**
-   * @brief Creates an empty descriptor owner.
-   *
+   * @brief Constructs empty descriptor ownership.
    * @throws Nothing.
+   * @note `valid()` is false until ownership is assigned.
    */
-  UniqueFd() noexcept = default;
-
+  UniqueDescriptor() noexcept = default;
   /**
-   * @brief Takes ownership of one descriptor.
-   *
-   * @param fd Descriptor to own, or -1 for no descriptor.
+   * @brief Takes exact ownership of one descriptor.
+   * @param descriptor Descriptor to close later, or a negative empty value.
    * @throws Nothing.
+   * @note The caller must not close a nonnegative descriptor after transfer.
    */
-  explicit UniqueFd(int fd) noexcept;
-
+  explicit UniqueDescriptor(int descriptor) noexcept
+      : descriptor_(descriptor) {}
   /**
-   * @brief Closes the owned descriptor once.
-   *
+   * @brief Closes the owned descriptor at most once.
    * @throws Nothing.
+   * @note Close errors are intentionally ignored during teardown.
    */
-  ~UniqueFd();
+  ~UniqueDescriptor() noexcept;
 
+  UniqueDescriptor(const UniqueDescriptor&) = delete;
+  UniqueDescriptor& operator=(const UniqueDescriptor&) = delete;
   /**
-   * @brief Prevents copying ownership of one descriptor.
-   *
-   * @throws Nothing because this operation is unavailable.
-   */
-  UniqueFd(const UniqueFd&) = delete;
-
-  /**
-   * @brief Prevents descriptor ownership duplication by assignment.
-   *
-   * @return No value because this operation is unavailable.
-   * @throws Nothing because this operation is unavailable.
-   */
-  UniqueFd& operator=(const UniqueFd&) = delete;
-
-  /**
-   * @brief Transfers descriptor ownership.
-   *
-   * @param other Owner to empty.
+   * @brief Transfers descriptor ownership from another object.
+   * @param other Source left without descriptor ownership.
    * @throws Nothing.
+   * @note No descriptor is duplicated.
    */
-  UniqueFd(UniqueFd&& other) noexcept;
-
+  UniqueDescriptor(UniqueDescriptor&& other) noexcept;
   /**
-   * @brief Replaces this descriptor with one transferred from another owner.
-   *
-   * @param other Owner to empty.
-   * @return This owner after replacement.
+   * @brief Replaces ownership after closing the current descriptor.
+   * @param other Source left without descriptor ownership.
+   * @return This ownership object.
    * @throws Nothing.
+   * @note Self-assignment preserves the current descriptor.
    */
-  UniqueFd& operator=(UniqueFd&& other) noexcept;
+  UniqueDescriptor& operator=(UniqueDescriptor&& other) noexcept;
 
   /**
    * @brief Returns the owned descriptor without transferring it.
-   *
-   * @return Descriptor number, or -1 when empty.
+   * @return Nonnegative descriptor, or -1 when empty.
    * @throws Nothing.
+   * @note The borrowed descriptor remains owned by this object.
    */
-  int get() const noexcept;
-
+  [[nodiscard]] int get() const noexcept { return descriptor_; }
   /**
    * @brief Reports whether a descriptor is owned.
-   *
-   * @return True when `get()` is nonnegative.
+   * @return True exactly when `get()` is nonnegative.
    * @throws Nothing.
+   * @note This does not probe operating-system liveness.
    */
-  explicit operator bool() const noexcept;
-
+  [[nodiscard]] bool valid() const noexcept { return descriptor_ >= 0; }
   /**
-   * @brief Releases ownership without closing.
-   *
-   * @return Previously owned descriptor, or -1.
+   * @brief Closes current ownership and takes a replacement.
+   * @param descriptor Replacement descriptor, or -1 for empty ownership.
    * @throws Nothing.
-   * @note The caller becomes responsible for closing the returned descriptor.
+   * @note Close errors are intentionally ignored.
    */
-  int release() noexcept;
-
+  void reset(int descriptor = -1) noexcept;
   /**
-   * @brief Closes the current descriptor and optionally adopts another.
-   *
-   * @param fd Replacement descriptor, or -1.
+   * @brief Releases ownership without closing the descriptor.
+   * @return Former descriptor, or -1 when already empty.
    * @throws Nothing.
-   * @note Close errors are intentionally ignored during ownership cleanup.
+   * @note The caller becomes responsible for closing a nonnegative result.
    */
-  void reset(int fd = -1) noexcept;
+  [[nodiscard]] int release() noexcept;
 
  private:
-  /** @brief Descriptor owned by this object, or -1. */
-  int fd_ = -1;
+  /** @brief Owned POSIX descriptor or -1. */
+  int descriptor_ = -1;
 };
 
 /**
- * @brief Configures socket-local SIGPIPE suppression where required.
- *
- * @param fd Newly created or accepted Unix socket descriptor.
- * @param message Receives a diagnostic when configuration fails.
- * @return True on Linux or after successful macOS `SO_NOSIGPIPE` setup.
- * @throws std::bad_alloc if diagnostic construction fails.
- * @note The helper never changes process-global signal disposition.
+ * @brief Connects one local stream to an explicit Unix-domain socket path.
+ * @param path Exact local filesystem socket path.
+ * @return Connected owned descriptor or typed argument/transport failure.
+ * @throws std::bad_alloc If path or diagnostic allocation fails.
+ * @note No discovery, retry, remote endpoint, or daemon start is performed.
  */
-bool configure_no_sigpipe(int fd, std::string* message);
+[[nodiscard]] Result<UniqueDescriptor> connect_unix_socket(
+    const std::string& path);
 
 /**
- * @brief Creates one configured but unconnected Unix stream socket.
- *
- * @param message Receives a bounded socket/fcntl diagnostic on failure.
- * @return Owned `FD_CLOEXEC` descriptor or an empty owner.
- * @throws std::bad_alloc if diagnostic construction fails.
- * @note Separating creation from connect lets lifecycle owners publish the
- *       descriptor before an interruptible nonblocking connect begins.
+ * @brief Creates a same-user listener with filesystem mode 0600.
+ * @param path Exact local socket path.
+ * @param backlog Positive pending-connection bound.
+ * @return Bound listening descriptor or typed failure.
+ * @throws std::bad_alloc If path or diagnostic allocation fails.
+ * @note An existing socket node is replaced; any other filesystem object is
+ * rejected without removal.
  */
-UniqueFd create_unix_stream_socket(std::string* message);
+[[nodiscard]] Result<UniqueDescriptor> create_unix_listener(
+    const std::string& path, int backlog);
 
 /**
- * @brief Connects one already-owned socket with interruptible nonblocking IO.
- *
- * @param fd Configured Unix stream socket descriptor.
- * @param socket_path Absolute filesystem path fitting `sun_path`.
- * @param should_stop Stop predicate checked before connect and between bounded
- *        backlog-retry/writable-wait slices.
- * @param message Receives validation, connect, interruption, or socket
- *        diagnostics.
- * @return True after connection and restoration of blocking mode.
- * @throws std::bad_alloc if diagnostic construction fails, or whatever the
- *         supplied stop predicate throws.
- * @note The function performs one logical nonblocking connection. It completes
- *       `EINPROGRESS`/`EALREADY` through writable poll plus `SO_ERROR`; Linux
- *       AF_UNIX `EAGAIN` means no connection began, so it waits one bounded
- *       slice and re-enters connect on the same fd; `EISCONN` after such a
- *       transient is successful logical completion. It never closes,
- *       transfers ownership, writes a frame, or imposes a total timeout.
+ * @brief Accepts one connection and verifies the peer uid equals this process.
+ * @param listener Valid listening descriptor.
+ * @return Connected descriptor or typed accept/peer failure.
+ * @throws std::bad_alloc If a failure diagnostic allocation fails.
+ * @note A peer rejected by the same-user check is closed before return.
  */
-bool connect_prepared_unix_socket(int fd, const std::string& socket_path,
-                                  const std::function<bool()>& should_stop,
-                                  std::string* message);
+[[nodiscard]] Result<UniqueDescriptor> accept_same_user(int listener);
 
 /**
- * @brief Connects through one injected attempt and the production wait logic.
- *
- * @param fd Configured Unix stream socket descriptor.
- * @param socket_path Absolute filesystem path fitting `sun_path`.
- * @param should_stop Stop predicate checked before attempt and while pending.
- * @param connect_attempt Callable receiving descriptor, sockaddr bytes, and
- *        address length; it must follow connect's return/errno contract.
- * @param message Receives validation, connect, interruption, or socket
- *        diagnostics.
- * @return True after the logical connection completes and original blocking
- *         flags are restored.
- * @throws std::bad_alloc if diagnostic construction fails, or whatever either
- *         injected callable throws.
- * @note This source-tree-private seam makes pending completion and Linux
- *       backlog-`EAGAIN` retries deterministic in tests. Re-entry is limited to
- *       a same-fd local connection that has not begun; no frame/RPC is retried.
- *       The helper never owns or closes `fd`.
+ * @brief Requests read/write interruption on a descriptor idempotently.
+ * @param descriptor Descriptor to interrupt; negative values are ignored.
+ * @throws Nothing.
+ * @note This does not transfer or close descriptor ownership.
  */
-bool connect_prepared_unix_socket_with_attempt(
-    int fd, const std::string& socket_path,
-    const std::function<bool()>& should_stop,
-    const std::function<int(int, const void*, std::size_t)>& connect_attempt,
-    std::string* message);
+void shutdown_descriptor(int descriptor) noexcept;
 
 /**
- * @brief Connects one owned stream socket to an absolute Unix path.
- *
- * @param socket_path Absolute filesystem path that fits `sun_path` including
- *        its terminating NUL.
- * @param message Receives a local validation, socket, or connect diagnostic.
- * @return Owned connected descriptor, or an empty owner on failure.
- * @throws std::bad_alloc if diagnostic construction fails.
- * @note The function performs one logical connection. Linux backlog `EAGAIN`
- *       may re-enter local connect on the same unconnected fd; it never retries
- *       a frame or potentially mutating protocol operation.
+ * @brief Removes an exact socket filesystem node when it is still a socket.
+ * @param path Exact path previously bound by this process.
+ * @throws Nothing.
+ * @note Non-socket filesystem objects are never removed.
  */
-UniqueFd connect_unix_socket(const std::string& socket_path,
-                             std::string* message);
+void remove_socket_node(const std::string& path) noexcept;
 
 }  // namespace ps::ipc::internal

@@ -2,342 +2,111 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
-#include "photospider/core/result_types.hpp"
-#include "photospider/data/value_artifact.hpp"
-#include "photospider/host/compute_request.hpp"
-
-/**
- * @file protocol.hpp
- * @brief Typed public values for Photospider local IPC protocol version 2.
- *
- * The declarations own their data and deliberately exclude JSON parser types,
- * Unix descriptors, socket structures, and backend implementation objects.
- */
+#include "photospider/compiler/workflow_document.hpp"
+#include "photospider/core/status.hpp"
+#include "photospider/execution/execution.hpp"
 
 namespace ps::ipc {
 
-/**
- * @brief Wire protocol version implemented by this client product.
- *
- * @throws Nothing.
- * @note The constant is compile-time metadata, not a negotiated mutable state.
- */
-inline constexpr std::int32_t kProtocolVersion = 2;
+/** @brief Exact local IPC wire version implemented by this product. */
+inline constexpr std::uint16_t kProtocolVersion = 3U;
+
+/** @brief Maximum accepted binary frame payload, excluding length prefix. */
+inline constexpr std::size_t kMaximumFramePayloadBytes = 4U * 1024U * 1024U;
 
 /**
- * @brief Largest accepted version 2 JSON payload in bytes.
+ * @brief Opaque process-local logical namespace identifier.
  *
- * @throws Nothing.
- * @note The four-byte frame header is not included in this payload bound.
+ * @note Values are invalid after daemon restart and have no kernel meaning.
  */
-inline constexpr std::size_t kMaximumFramePayloadBytes = 16U * 1024U * 1024U;
-
-/**
- * @brief Status-oriented result carrying an owned typed value.
- *
- * @tparam Value Default-constructible public value returned on success.
- * @throws Whatever `Value` or `OperationStatus` throws during value
- *         operations.
- * @note `value` is authoritative only when `status.ok` is true.
- */
-template <typename Value>
-struct IpcResult {
-  /** @brief Completion status for the operation. */
-  OperationStatus status;
-
-  /** @brief Owned operation result, or a default value after failure. */
-  Value value{};
+struct SessionId final {
+  /** @brief Nonzero daemon-instance token. */
+  std::uint64_t instance = 0U;
+  /** @brief Nonzero daemon-generated ephemeral value. */
+  std::uint64_t value = 0U;
 };
 
 /**
- * @brief Opaque daemon-global identifier for one active graph session.
+ * @brief Opaque ephemeral execution identifier.
  *
- * @throws std::bad_alloc when copied or mutated storage cannot be allocated.
- * @note Version 2 values are 32 lowercase hexadecimal characters generated
- *       from operating-system entropy. Clients must not parse or derive them.
+ * @note Callers retry by submitting again and receiving a distinct value.
  */
-struct IpcSessionId {
-  /** @brief Opaque identifier copied from a daemon response. */
-  std::string value;
+struct JobId final {
+  /** @brief Nonzero daemon-instance token. */
+  std::uint64_t instance = 0U;
+  /** @brief Nonzero daemon-generated ephemeral value. */
+  std::uint64_t value = 0U;
 };
 
 /**
- * @brief Typed result of `daemon.ping`.
+ * @brief Exact forward-only lifecycle of one ephemeral execution.
  *
- * @throws std::bad_alloc when copied string storage cannot be allocated.
- * @note The server instance id changes on each daemon process start.
+ * @note Permitted transitions are exactly Queued to Running to one terminal
+ * state. A queued cancellation is observed immediately after dispatch enters
+ * Running.
  */
-struct DaemonPing {
-  /** @brief True when the daemon routed the ping request. */
-  bool pong = false;
-
-  /** @brief Opaque identity of the serving daemon process instance. */
-  std::string server_instance_id;
+enum class JobState : std::uint8_t {
+  Queued = 1U,
+  Running = 2U,
+  Succeeded = 3U,
+  Failed = 4U,
+  Cancelled = 5U,
 };
 
 /**
- * @brief Typed version and capability metadata for one daemon instance.
+ * @brief Public submit controls mapped to kernel planning and execution.
  *
- * @throws std::bad_alloc when copied strings or methods cannot be allocated.
- * @note `methods` is the exact sorted 60-method version 2 inventory and
- *       advertises only routes admitted by the connected daemon.
+ * @note The request never carries native-library paths or internal IR.
  */
-struct DaemonVersion {
-  /** @brief Negotiated wire protocol version. */
-  std::int32_t protocol_version = 0;
+struct JobSubmitOptions final {
+  /** @brief Whether the daemon-configured optional local GPU may be planned. */
+  bool allow_gpu = false;
+  /** @brief Per-execution local parallelism; zero uses kernel default. */
+  std::uint32_t maximum_parallelism = 0U;
+};
 
-  /** @brief Stable daemon service name. */
-  std::string service_name;
+/**
+ * @brief Non-destructive snapshot of one ephemeral execution.
+ *
+ * @note `outcome` is canonical success before terminal completion and carries
+ * the final failure category for Failed or Cancelled.
+ */
+struct JobStatus final {
+  /** @brief Exact ephemeral execution identifier. */
+  JobId job_id;
+  /** @brief Owning logical namespace identifier. */
+  SessionId session_id;
+  /** @brief Current forward-only lifecycle state. */
+  JobState state = JobState::Queued;
+  /** @brief Final status when terminal; otherwise canonical success. */
+  Status outcome;
+};
 
-  /** @brief Photospider project version used to build the daemon. */
+/**
+ * @brief Read-only local daemon capabilities and live counts.
+ *
+ * @note Counts are observations and may change immediately after return.
+ */
+struct DaemonInfo final {
+  /** @brief Exact wire protocol version, always three. */
+  std::uint16_t protocol_version = kProtocolVersion;
+  /** @brief Nonzero non-security identity unique to this process lifetime. */
+  std::uint64_t instance_id = 0U;
+  /** @brief Build-time daemon package version. */
   std::string service_version;
-
-  /** @brief Opaque identity of the serving daemon process instance. */
-  std::string server_instance_id;
-
-  /** @brief Local transport name; version 2 reports `unix`. */
+  /** @brief Local transport name, currently `unix-domain`. */
   std::string transport;
-
-  /** @brief Exact sorted 60-method wire inventory supported by the daemon. */
+  /** @brief Exact sorted nine-method surface. */
   std::vector<std::string> methods;
-};
-
-/**
- * @brief Public display row for one daemon-owned graph session.
- *
- * @throws std::bad_alloc when copied strings cannot be allocated.
- * @note Only `session_id` addresses later calls; `session_name` is preserved
- *       caller metadata and retains existing Host filesystem semantics.
- */
-struct GraphSessionSummary {
-  /** @brief Opaque daemon-global session identifier. */
-  IpcSessionId session_id;
-
-  /** @brief Caller-provided safe Host session name. */
-  std::string session_name;
-};
-
-/**
- * @brief Opaque daemon-global identifier for one accepted compute job.
- *
- * @throws std::bad_alloc when copied or mutated storage cannot be allocated.
- * @note Version 2 values are 32 lowercase hexadecimal characters. They remain
- *       valid across direct-client disconnects until release, eviction, or
- *       terminal-record expiry and must never be interpreted as paths.
- */
-struct ComputeRequestId {
-  /** @brief Opaque compute-job identifier copied from the daemon. */
-  std::string value;
-};
-
-/**
- * @brief Opaque identity of one protected daemon Value artifact set.
- *
- * @throws std::bad_alloc when copied or mutated storage cannot be allocated.
- * @note This id names daemon-owned output-store state; it is not a backend
- *       cache key, filesystem path, or native-library handle.
- */
-struct OutputArtifactId {
-  /** @brief Opaque output identifier copied from validated result metadata. */
-  std::string value;
-};
-
-/**
- * @brief Opaque identity of one active artifact-delivery lease.
- *
- * @throws std::bad_alloc when copied or mutated storage cannot be allocated.
- * @note The stable id is returned by `compute.result` and may be supplied to
- *       `compute.release` so job ownership and its matching lease are released
- *       atomically. It contains no descriptor or client-memory ownership.
- */
-struct DeliveryLeaseId {
-  /** @brief Opaque delivery-lease identifier copied from the daemon. */
-  std::string value;
-};
-
-/**
- * @brief Selects the result retained for one polling compute job.
- *
- * @throws Nothing.
- * @note Status jobs invoke the daemon Host status compute path. Values jobs
- *       invoke the Host named-Value compute path exactly once and may publish
- *       one protected complete artifact set after terminal success.
- */
-enum class ComputeResultMode {
-  /** @brief Retain only the exact terminal operation status. */
-  Status,
-
-  /** @brief Retain an optional protected named-Value artifact set. */
-  Values,
-};
-
-/**
- * @brief Forward-only lifecycle state of one daemon polling job.
- *
- * @throws Nothing.
- * @note Values may advance only from Queued to Running and then to Succeeded
- *       or Failed. Version 2 publishes no cancelling/cancelled state.
- */
-enum class ComputeJobState {
-  /** @brief Accepted work waiting for the daemon's joined worker. */
-  Queued,
-
-  /** @brief Work currently executing through the daemon Host boundary. */
-  Running,
-
-  /** @brief Immutable terminal work with a successful nested status. */
-  Succeeded,
-
-  /** @brief Immutable terminal work with a failed nested status. */
-  Failed,
-};
-
-/**
- * @brief Owned typed request for `compute.submit`.
- *
- * The request mirrors the public Host compute controls while replacing the
- * embedded Host session label with the daemon's opaque session id and adding
- * the explicit polling result mode.
- *
- * @throws std::bad_alloc when copied string or optional storage allocation
- *         fails.
- * @note The direct Client serializes this value once and never automatically
- *       retries submission after a transport failure. Unknown future wire
- *       members remain a daemon-side compatibility concern.
- */
-struct ComputeSubmitRequest {
-  /** @brief Opaque daemon session whose graph owns the target node. */
-  IpcSessionId session_id;
-
-  /** @brief Nonnegative graph node requested for compute. */
-  NodeId node;
-
-  /** @brief Cache precision and persistence controls. */
-  HostComputeCacheOptions cache;
-
-  /**
-   * @brief Parallel-route, optional positive Run-cap, and quiet-mode controls.
-   * @note The direct Client omits an absent `maximum_parallelism`, preserves a
-   *       positive value exactly, and rejects zero before wire I/O.
-   */
-  HostComputeExecutionOptions execution;
-
-  /** @brief Timing and telemetry controls. */
-  HostComputeTelemetryOptions telemetry;
-
-  /** @brief Optional HP or RT compute intent. */
-  std::optional<ComputeIntent> intent;
-
-  /** @brief Optional HP-space dirty ROI for intent-aware compute. */
-  std::optional<PixelRect> dirty_roi;
-
-  /** @brief Status-only or protected named-Value result selection. */
-  ComputeResultMode result_mode = ComputeResultMode::Status;
-};
-
-/**
- * @brief Immutable metadata for one protected named-Value artifact archive.
- *
- * @throws std::bad_alloc when copied path or identifier storage cannot be
- *         allocated.
- * @note The value contains no payload bytes, descriptor, mutable mapping,
- *       runtime binding, or native object. An IPC Host consumer owns protected
- *       opening and complete local reconstruction while the associated
- *       delivery lease protects result-to-open.
- */
-struct OutputArtifactMetadata {
-  /** @brief Stable daemon artifact identity. */
-  OutputArtifactId output_id;
-
-  /** @brief Absolute protected artifact path advertised by the daemon. */
-  std::string path;
-
-  /** @brief Exact regular-file byte size. */
-  std::size_t byte_size = 0;
-
-  /** @brief SHA-256 identity of the complete exact archive bytes. */
-  ArtifactPayloadDigest digest;
-
-  /** @brief Exact named-artifact-set archive structural version. */
-  std::uint32_t archive_version = 1U;
-
-  /** @brief Number of canonical named Values encoded by the archive. */
-  std::uint32_t value_count = 0U;
-
-  /** @brief Filesystem device captured at daemon publication. */
-  std::uint64_t filesystem_device = 0;
-
-  /** @brief Filesystem inode captured at daemon publication. */
-  std::uint64_t inode = 0;
-};
-
-/**
- * @brief Revalidated artifact metadata protected by one stable delivery lease.
- *
- * @throws std::bad_alloc when copied metadata or lease storage cannot be
- *         allocated.
- * @note Repeated successful `compute.result` calls for one retained artifact
- *       return the same lease id while atomically refreshing its server-side
- *       expiry. This value owns only copied metadata, not the lease itself.
- */
-struct OutputArtifactDelivery {
-  /** @brief Revalidated immutable artifact metadata. */
-  OutputArtifactMetadata metadata;
-
-  /** @brief Stable lease identity refreshed by this result operation. */
-  DeliveryLeaseId delivery_id;
-};
-
-/**
- * @brief Owned non-destructive snapshot of one daemon compute job.
- *
- * @throws std::bad_alloc when copied identifiers, status diagnostics, path,
- *         or optional value storage cannot be allocated.
- * @note `status` is absent for Queued/Running and present for both terminal
- *       states. `output` is present only for a successful terminal nonempty
- *       named-Value result; status polling and submission never publish it.
- */
-struct ComputeJobSnapshot {
-  /** @brief Opaque identity of the accepted job. */
-  ComputeRequestId compute_id;
-
-  /** @brief Opaque session captured at accepted submission. */
-  IpcSessionId session_id;
-
-  /** @brief Current forward-only job lifecycle state. */
-  ComputeJobState state = ComputeJobState::Queued;
-
-  /** @brief Cancellation capability; version 2 requires false. */
-  bool cancellable = false;
-
-  /** @brief Exact immutable terminal status, absent while nonterminal. */
-  std::optional<OperationStatus> status;
-
-  /** @brief Optional result-time artifact delivery and lease metadata. */
-  std::optional<OutputArtifactDelivery> output;
-};
-
-/**
- * @brief Typed acknowledgement returned by `compute.release`.
- *
- * @throws std::bad_alloc when copied identifier storage cannot be allocated.
- * @note A successful acknowledgement always echoes the requested job id and
- *       reports `released=true`. It owns no remaining job or artifact state.
- */
-struct ComputeReleaseResult {
-  /** @brief Opaque job identity echoed by the daemon. */
-  ComputeRequestId compute_id;
-
-  /**
-   * @brief True after terminal job ownership and/or its matching orphaned
-   *        delivery lease was released.
-   */
-  bool released = false;
+  /** @brief Current logical namespace count. */
+  std::uint64_t active_sessions = 0U;
+  /** @brief Current retained execution count. */
+  std::uint64_t active_jobs = 0U;
+  /** @brief Fixed global running-execution bound. */
+  std::uint32_t maximum_concurrency = 0U;
 };
 
 }  // namespace ps::ipc
