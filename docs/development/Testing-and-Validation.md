@@ -55,6 +55,11 @@ never a sibling source target or private kernel include path.
   timeout path cancels A before collecting the close future so failures clean
   up promptly; subsequent daemon shutdown cannot retain a close handler that
   waits for A's natural delay.
+- Worker exception-fence tests inject allocation, standard, nonstandard, and
+  null-diagnostic primary failures after Running, with independent secondary
+  failure-status construction faults. They require a terminal failure with the
+  primary category, an empty fallback diagnostic when necessary, observable
+  `job.result`, close-waiter release, and exact Job/Session cleanup.
 - Server tests cover the positive active-handler bound, typed backpressure,
   sequential runtime reaping, exception fencing, shutdown join, and
   deterministic post-bind construction failures with descriptor/node cleanup

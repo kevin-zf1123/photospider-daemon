@@ -308,7 +308,10 @@ same-uid writer racing exactly between them.
   publication. Pre-mutation snapshot failure reopens the Session; successful
   settlement erases it with a fresh-id-only capacity reuse path.
 - Job state is monotonic and cancellation cannot publish success afterward.
-- Worker/callback exceptions are fenced into one Job failure.
+- Worker/callback exceptions are fenced into one Job failure. The worker catch
+  boundary passes only a nullable diagnostic pointer; null becomes an empty
+  message, and secondary construction failure preserves cancellation or the
+  primary error category while publishing terminal state and cleanup.
 - Descriptor, worker, GraphContext, result, and queue ownership settles exactly
   once.
 - Listener construction prepares allocation-backed path/leaf/guard state before

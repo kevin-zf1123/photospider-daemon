@@ -267,7 +267,9 @@ credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。P
   result publication。Pre-mutation snapshot failure 会重新打开 Session；成功 settle 后
   erase，并只通过 fresh id 复用 capacity。
 - Job state 单调，cancellation 后不能发布 success。
-- Worker/callback exception 被 fenced 到一个 Job failure。
+- Worker/callback exception 被 fenced 到一个 Job failure。Worker catch boundary 只传递
+  nullable diagnostic pointer；null 规范化为空 message，secondary construction failure
+  仍会保留 cancellation 或 primary error category，并发布 terminal state 与 cleanup。
 - descriptor、worker、GraphContext、result 与 queue ownership 恰好 settle 一次。
 - Listener construction 在 bind 前准备 allocation-backed path/leaf/guard state，在成功
   bind 与 generation arm 之间不执行可能分配或抛异常的 C++ operation，并让

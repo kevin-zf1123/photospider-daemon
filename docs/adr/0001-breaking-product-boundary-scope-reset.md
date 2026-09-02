@@ -81,6 +81,13 @@ completion or result publication after cancellation or Session close. Calling
 `job.release` removes the terminal record and temporary result. Ordinary
 process-global concurrency limits and backpressure are allowed.
 
+The worker exception fence accepts a nullable borrowed diagnostic pointer and
+constructs every owned string and `Status` inside its protected block. A null
+standard-exception diagnostic becomes an empty message. If primary or
+failure-status construction throws, the fallback still publishes a terminal
+failure, wakes close waiters, clears result ownership, and preserves
+cancellation or the primary error category.
+
 There is no `JobAttemptId`, automatic retry, checkpoint, recovery journal,
 durable Job specification, artifact id, output commit, receipt, per-tenant
 quota, or retained state across restart. A caller retry is a new submit and a
