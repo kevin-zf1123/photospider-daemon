@@ -14,7 +14,8 @@ sibling source target 或 private kernel include path。
 ## 维护中的行为覆盖
 
 - Binary codec test 覆盖精确 enum、range、UTF-8、duplicate field、trailing byte、
-  request correlation 与 protocol-error sentinel。
+  request correlation 与 protocol-error sentinel。One-shot fake Unix server 证明 public
+  Client 返回完整读取的 sentinel typed status，并 reset descriptor。
 - 真实 Unix-socket test 覆盖 oversized `0xffffffff`、truncated、duplicate、unknown-enum、
   invalid-UTF-8 与 trailing-byte request。完整十一字节 header 后发生 body EOF 时保留
   correlation；incomplete header 只使用 sentinel。Server 返回一个 typed failure 后关闭，
@@ -27,9 +28,11 @@ sibling source target 或 private kernel include path。
   fail-safe run guard，在 assertion return 或 exception 时先 request stop 再 join。
   Handler-count assertion 会先等待 active zero，再显式驱动一次 accept-loop reap，而不是
   只依赖经过的时间。
-- Transport test 检查 client、listener、accepted stream 与固定 parent descriptor 的
-  close-on-exec 及 fork/exec 后不继承；只有独立 SIGPIPE self-exec 场景使用的
-  test-owned duplicate 会被显式设为可继承。
+- Transport test 证明即使 ambient `errno` 无关地残留，peer-uid rejection 仍只影响当前
+  connection；正常 `request_stop` 成功，非 stop 的 fatal accept failure 保持 typed。
+  它们检查 client、listener、accepted stream 与固定 parent descriptor 的
+  close-on-exec 及 fork/exec 后不继承；只有独立 SIGPIPE self-exec 场景使用的 test-owned
+  duplicate 会被显式设为可继承。
 - Pathname test 在 connect/listen effect 前拒绝 embedded-NUL suffix 与 NUL 后 slash
   variant，并保留每个较短 prefix。
 - 真实 `photospiderd` subprocess test 会发送 `SIGINT`、在五秒 cooperative Job 到达

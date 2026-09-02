@@ -7,8 +7,10 @@ boundary。
 
 IPC v3 是 same-user、same-machine、non-persistent orchestration protocol。Darwin
 与 Linux 使用 Unix-domain stream socket，并验证 peer effective uid。Socket-node
-mode 不是 authentication boundary；调用者选择适当私有的 parent directory。精确
-sorted method inventory 为：
+mode 不是 authentication boundary；调用者选择适当私有的 parent directory。受支持
+平台上的 uid mismatch 只关闭该 accepted stream，listener 继续运行；accept、stream
+preparation 与 credential syscall failure 仍是 typed fatal server failure。精确 sorted
+method inventory 为：
 
 1. `daemon.info`
 2. `daemon.shutdown`
@@ -78,6 +80,11 @@ complete header 前的 truncation 或 unknown version/method），failed respons
 sentinel `request_id=0`、`method=daemon.info`。如果完整合法 header 已到达、后续
 method-body byte 才截断，failed response 保留该 header 的 request id 与 method。普通
 request 与 successful response 绝不能使用 sentinel。
+
+Public Client 完整读到合法 failed sentinel 时，会返回 sentinel 的 typed status 并使
+connection 失效；普通 response 仍要求 exact nonzero request-id/method correlation。
+Sentinel 是 best-effort server response：若 transport failure 阻止完整读取，Client
+返回该 transport failure。
 
 ## Ephemeral identifier
 

@@ -118,8 +118,11 @@ class Server final {
    * failure.
    * @throws std::bad_alloc If handler ownership allocation fails.
    * @throws std::system_error If a connection handler cannot be started.
-   * @note Call exactly once from one thread. Handler-creation failure stops
-   * admission, joins every already-owned handler, removes the socket node, and
+   * @note Call exactly once from one thread. A peer uid mismatch closes only
+   * that accepted stream and admission continues. Fatal accept, stream
+   * preparation, or credential syscall failure stops admission unless
+   * `request_stop()` already established normal shutdown. Handler-creation
+   * failure joins every already-owned handler, removes the socket node, and
    * then propagates.
    */
   [[nodiscard]] Status run();

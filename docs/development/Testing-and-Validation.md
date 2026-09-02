@@ -16,7 +16,9 @@ never a sibling source target or private kernel include path.
 ## Maintained behavior coverage
 
 - Binary codec tests cover exact enums, ranges, UTF-8, duplicate fields,
-  trailing bytes, request correlation, and the protocol-error sentinel.
+  trailing bytes, request correlation, and the protocol-error sentinel. A
+  one-shot fake Unix server proves the public Client returns a completely read
+  sentinel's typed status and resets its descriptor.
 - Real Unix-socket tests cover oversized `0xffffffff`, truncated, duplicate,
   unknown-enum, invalid-UTF-8, and trailing-byte requests. A complete eleven-
   byte header followed by body EOF preserves correlation; an incomplete header
@@ -31,8 +33,10 @@ never a sibling source target or private kernel include path.
   run guard that requests stop and joins on assertion return or exception.
   Handler-count assertions first wait for active zero and drive one explicit
   accept-loop reap rather than relying on elapsed time alone.
-- Transport tests check close-on-exec on the client, listener, accepted stream,
-  and fixed parent descriptor plus
+- Transport tests prove a peer-uid rejection remains connection-local even
+  with unrelated ambient `errno`, a normal `request_stop` succeeds, and a
+  non-stop fatal accept failure remains typed. They check close-on-exec on the
+  client, listener, accepted stream, and fixed parent descriptor plus
   fork/exec non-inheritance; only a test-owned duplicate is made inheritable
   for the separate SIGPIPE self-exec scenario.
 - Pathname tests reject embedded-NUL suffix and post-NUL slash variants before

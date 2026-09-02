@@ -11,7 +11,10 @@ namespace ps::ipc {
  * @brief Sequential client for the exact local IPC version-three surface.
  *
  * @note Independent Client objects may be used concurrently. One Client
- * permits at most one outstanding call and performs no automatic retry.
+ * permits at most one outstanding call and performs no automatic retry. A
+ * completely received failed sentinel (`request_id=0`, `daemon.info`) returns
+ * its typed status and disconnects; a sentinel lost to transport failure
+ * cannot replace the observed transport status.
  */
 class Client final {
  public:

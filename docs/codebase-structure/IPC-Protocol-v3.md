@@ -8,7 +8,10 @@ product boundary.
 IPC v3 is a same-user, same-machine, non-persistent orchestration protocol.
 Darwin and Linux use a Unix-domain stream socket and verify the peer effective
 uid. Socket-node mode is not an authentication boundary; callers select a
-suitably private parent directory. The exact sorted method inventory is:
+suitably private parent directory. A supported-platform uid mismatch closes
+only that accepted stream and the listener continues; accept, stream
+preparation, and credential syscall failures remain typed fatal server
+failures. The exact sorted method inventory is:
 
 1. `daemon.info`
 2. `daemon.shutdown`
@@ -86,6 +89,12 @@ sole sentinel `request_id=0`, `method=daemon.info`. If the complete valid header
 arrives and later method-body bytes are truncated, the failed response keeps
 that header's request id and method. A normal request and a successful response
 may never use the sentinel.
+
+When the public Client completely reads a legal failed sentinel, it returns the
+sentinel's typed status and invalidates the connection; ordinary responses
+still require exact nonzero request-id/method correlation. The sentinel is a
+best-effort server response: if transport failure prevents a complete read,
+the Client returns that transport failure instead.
 
 ## Ephemeral identifiers
 

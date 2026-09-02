@@ -3,11 +3,13 @@
 
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "ipc/codec.hpp"
 #include "ipc/frame.hpp"
+#include "ipc/unix_socket.hpp"
 #include "photospider/ipc/client.hpp"
 #include "support/test_support.hpp"
 
@@ -32,12 +34,89 @@ ps::WorkflowDocument document() {
   return value;
 }
 
+/**
+ * @brief Returns one process-unique fake-server Unix socket path.
+ * @return Uncreated bounded path under `/tmp`.
+ * @throws std::bad_alloc If path construction fails.
+ * @note The helper is called only from the single test thread.
+ */
+std::string socket_path() {
+  static std::uint32_t sequence = 0U;
+  return "/tmp/psd-codec-" + std::to_string(::getpid()) + "-" +
+         std::to_string(sequence++) + ".sock";
+}
+
+/**
+ * @brief Serves one legal failed sentinel to the public Client.
+ * @return True when the typed status is preserved and transport is reset.
+ * @throws std::bad_alloc If fixture or protocol allocation fails.
+ * @throws std::system_error If the one-shot responder thread cannot start.
+ * @note The fake server reads one complete daemon.info request, emits only the
+ * documented failed sentinel, then closes through descriptor RAII.
+ */
+bool public_client_decodes_failed_sentinel() {
+  using ps::ErrorCode;
+  using ps::Status;
+  using ps::ipc::Client;
+  using ps::ipc::internal::accept_same_user;
+  using ps::ipc::internal::create_unix_listener;
+  using ps::ipc::internal::decode_request;
+  using ps::ipc::internal::encode_protocol_error;
+  using ps::ipc::internal::Method;
+  using ps::ipc::internal::read_frame;
+  using ps::ipc::internal::write_frame;
+
+  const std::string path = socket_path();
+  auto listener = create_unix_listener(path, 1);
+  if (!listener.ok()) {
+    return false;
+  }
+  Client client;
+  if (!client.connect(path).ok()) {
+    return false;
+  }
+
+  bool server_ok = false;
+  std::thread server([&] {
+    try {
+      auto accepted = accept_same_user(listener.value().descriptor.get());
+      if (accepted.disposition !=
+          ps::ipc::internal::AcceptDisposition::Accepted) {
+        return;
+      }
+      auto request = read_frame(accepted.descriptor.get());
+      if (!request.ok()) {
+        return;
+      }
+      auto decoded = decode_request(request.value());
+      if (!decoded.ok() || decoded.value().request_id != 1U ||
+          decoded.value().method != Method::DaemonInfo) {
+        return;
+      }
+      auto sentinel = encode_protocol_error(Status::failure(
+          ErrorCode::ResourceExhausted, "one-shot capacity rejection"));
+      if (!sentinel.ok() ||
+          !write_frame(accepted.descriptor.get(), sentinel.value()).ok()) {
+        return;
+      }
+      server_ok = true;
+    } catch (...) {
+    }
+  });
+  auto info = client.daemon_info();
+  server.join();
+  return server_ok && !info.ok() &&
+         info.status().code == ErrorCode::ResourceExhausted &&
+         !client.connected();
+}
+
 }  // namespace
 
 /**
  * @brief Exercises v3 request/response round trips and malformed frame fences.
  * @return Zero when all checks pass.
  * @throws std::bad_alloc If test setup allocation fails.
+ * @throws std::system_error If the one-shot responder thread cannot start.
  * @note Behavioral failures otherwise return nonzero through `PS_IPC_CHECK`.
  */
 int main() {
@@ -229,5 +308,6 @@ int main() {
   PS_IPC_CHECK(!moved_from_call.ok());
   PS_IPC_CHECK(moved_from_call.status().code == ErrorCode::InvalidArgument);
   PS_IPC_CHECK(!moved_client.connected());
+  PS_IPC_CHECK(public_client_decodes_failed_sentinel());
   return 0;
 }

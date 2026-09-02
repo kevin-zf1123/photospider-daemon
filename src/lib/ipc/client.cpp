@@ -20,7 +20,9 @@ struct Client::Impl final {
    * @return Complete decoded response or local codec/transport failure.
    * @throws std::bad_alloc If codec/result storage allocation fails.
    * @note The mutex covers the entire request/response exchange so correlation
-   * state and stream framing cannot interleave.
+   * state and stream framing cannot interleave. A completely decoded failed
+   * sentinel returns its typed status and resets the descriptor; ordinary
+   * responses still require exact method/id correlation.
    */
   Result<internal::Response> call(internal::Request request) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -52,6 +54,13 @@ struct Client::Impl final {
     auto response = internal::decode_response(frame.value(), request.method,
                                               request.request_id);
     if (!response.ok()) {
+      auto sentinel = internal::decode_protocol_error(frame.value());
+      if (sentinel.ok() && sentinel.value().request_id == 0U &&
+          sentinel.value().method == internal::Method::DaemonInfo) {
+        Status sentinel_status = sentinel.value().status;
+        descriptor.reset();
+        return Result<internal::Response>(std::move(sentinel_status));
+      }
       descriptor.reset();
     }
     return response;

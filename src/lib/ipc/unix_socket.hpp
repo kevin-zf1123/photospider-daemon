@@ -276,6 +276,31 @@ struct BoundUnixListener final {
   SocketNodeGuard socket_node;
 };
 
+/** @brief Internal outcome class for one same-user accept attempt. */
+enum class AcceptDisposition : std::uint8_t {
+  /** @brief A verified stream descriptor is published. */
+  Accepted = 0U,
+  /** @brief One connected peer failed the supported-platform uid match. */
+  PeerRejected = 1U,
+  /** @brief Accept, stream preparation, or credential syscall failed. */
+  FatalFailure = 2U,
+};
+
+/**
+ * @brief Typed same-user accept outcome without diagnostic-string branching.
+ *
+ * @note `Accepted` uniquely carries a valid descriptor and success status.
+ * `PeerRejected` and `FatalFailure` carry no descriptor and one non-Ok status.
+ */
+struct SameUserAcceptResult final {
+  /** @brief Stable internal control-flow disposition. */
+  AcceptDisposition disposition = AcceptDisposition::FatalFailure;
+  /** @brief Verified accepted stream only for `Accepted`. */
+  UniqueDescriptor descriptor;
+  /** @brief Success for `Accepted`, otherwise typed rejection/failure. */
+  Status status;
+};
+
 /**
  * @brief Validates one pathname before any socket or filesystem syscall.
  * @param path Exact caller-supplied bytes.
@@ -323,7 +348,7 @@ struct BoundUnixListener final {
 /**
  * @brief Accepts one connection and verifies the peer uid equals this process.
  * @param listener Valid listening descriptor.
- * @return Connected descriptor or typed accept/peer failure.
+ * @return Explicit accepted, peer-rejected, or fatal-failure disposition.
  * @throws std::bad_alloc If a failure diagnostic allocation fails.
  * @note Accepted descriptors are close-on-exec. Linux requests the flag
  * atomically with `accept4`; unsupported platforms use checked `fcntl`, whose
@@ -331,7 +356,7 @@ struct BoundUnixListener final {
  * configures descriptor-level `SO_NOSIGPIPE` immediately after accept. Every
  * preparation failure and rejected peer is closed before return.
  */
-[[nodiscard]] Result<UniqueDescriptor> accept_same_user(int listener);
+[[nodiscard]] SameUserAcceptResult accept_same_user(int listener);
 
 /**
  * @brief Requests read/write interruption on a descriptor idempotently.
@@ -342,6 +367,24 @@ struct BoundUnixListener final {
 void shutdown_descriptor(int descriptor) noexcept;
 
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/**
+ * @brief Injects one peer-uid rejection after the next successful accept.
+ * @param ambient_errno Errno value left behind on the accepting thread.
+ * @throws Nothing.
+ * @note This seam exists only in the noninstalled test runtime and is consumed
+ * exactly once after stream preparation but before real peer verification.
+ */
+void reject_next_peer_for_test(int ambient_errno) noexcept;
+
+/**
+ * @brief Injects one fatal accept failure before the next accept syscall.
+ * @param error_number Positive errno value represented by the typed failure.
+ * @throws Nothing.
+ * @note This seam exists only in the noninstalled test runtime and is consumed
+ * exactly once without accepting or publishing a descriptor.
+ */
+void fail_next_accept_for_test(int error_number) noexcept;
+
 /**
  * @brief Callback type for one noninstalled post-arm pathname replacement.
  * @param path Exact listener pathname whose original generation is armed.
