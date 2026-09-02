@@ -299,7 +299,8 @@ Result<DaemonInfo> Client::daemon_info() {
 }
 
 /**
- * @brief Implements the `daemon.shutdown` RPC and connection teardown.
+ * @brief Implements the potentially outcome-ambiguous `daemon.shutdown` RPC
+ * and unconditional connection teardown.
  * @copydetails Client::daemon_shutdown
  */
 Status Client::daemon_shutdown() {

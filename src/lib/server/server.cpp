@@ -234,12 +234,15 @@ struct Server::Impl final {
    * @param connection Owned same-user stream descriptor.
    * @throws Nothing across the handler-thread boundary.
    * @note Malformed input receives one typed error then closes this connection;
-   * a successful shutdown request also interrupts listener and peer handlers.
+   * accepted shutdown is captured immediately after dispatch and interrupts
+   * the listener and peer handlers from the common no-throw tail regardless
+   * of response encoding, acknowledgement write, or catch-path failure.
    */
   void serve_connection(UniqueDescriptor connection) noexcept {
     const int descriptor = connection.get();
     FrameReadProgress frame_progress;
     bool registered = false;
+    bool accepted_shutdown = false;
     try {
       std::lock_guard<std::mutex> lock(connections_mutex);
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
@@ -277,16 +280,26 @@ struct Server::Impl final {
           break;
         }
         Response response = service.dispatch(request.value());
+        accepted_shutdown =
+            response.status.ok() && response.shutdown_after_write;
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+        test::observe_shutdown_response_ready(accepted_shutdown);
+        test::hit_exception_fence_fault(
+            test::ExceptionFenceFaultPoint::ResponseEncode);
+#endif
         auto encoded = encode_response(response);
         if (!encoded.ok()) {
           write_protocol_failure(descriptor, encoded.status(), &frame.value());
           break;
         }
-        if (!write_frame(descriptor, encoded.value()).ok()) {
+        const Status write_status = write_frame(descriptor, encoded.value());
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+        test::observe_shutdown_response_write(accepted_shutdown, write_status);
+#endif
+        if (!write_status.ok()) {
           break;
         }
-        if (response.shutdown_after_write) {
-          stop();
+        if (accepted_shutdown) {
           break;
         }
       }
@@ -301,6 +314,9 @@ struct Server::Impl final {
       write_handler_failure(descriptor, ErrorCode::Internal,
                             "connection handler raised an exception",
                             &frame_progress);
+    }
+    if (accepted_shutdown) {
+      stop();
     }
     if (registered) {
       std::lock_guard<std::mutex> lock(connections_mutex);

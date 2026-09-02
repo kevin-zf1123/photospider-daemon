@@ -815,7 +815,10 @@ struct Service::Impl final {
   std::map<std::uint64_t, std::shared_ptr<SessionRecord>> sessions;
   /** @brief Next nonzero namespace id. */
   std::uint64_t next_session_id = 1U;
-  /** @brief Monotonic admission fence raised by daemon.shutdown dispatch. */
+  /**
+   * @brief Monotonic admission fence raised at shutdown's no-throw commit.
+   * @note Pre-commit dispatch failure leaves this false.
+   */
   std::atomic<bool> shutting_down{false};
 };
 
@@ -840,6 +843,7 @@ Response Service::dispatch(const Request& request) noexcept {
   Response response;
   response.request_id = request.request_id;
   response.method = request.method;
+  bool accept_shutdown = false;
   try {
     if (request.method != Method::DaemonShutdown &&
         impl_->shutting_down.load(std::memory_order_acquire)) {
@@ -903,15 +907,18 @@ Response Service::dispatch(const Request& request) noexcept {
         response.daemon_info.maximum_sessions = impl_->config.maximum_sessions;
         break;
       case Method::DaemonShutdown:
-        impl_->shutting_down.store(true, std::memory_order_release);
         response.status = Status::success();
-        response.shutdown_after_write = true;
+        accept_shutdown = true;
         break;
     }
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
     test::hit_exception_fence_fault(
         test::ExceptionFenceFaultPoint::DispatchPrimary);
 #endif
+    if (accept_shutdown) {
+      impl_->shutting_down.store(true, std::memory_order_release);
+      response.shutdown_after_write = true;
+    }
   } catch (const std::bad_alloc&) {
     fail_response_without_allocation(response, ErrorCode::ResourceExhausted);
     try {

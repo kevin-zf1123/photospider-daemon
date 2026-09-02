@@ -46,7 +46,13 @@ never a sibling source target or private kernel include path.
   plus same-path rebinding. Every asynchronous Server test uses a fail-safe
   run guard that requests stop and joins on assertion return or exception.
   Handler-count assertions first wait for active zero and drive one explicit
-  accept-loop reap rather than relying on elapsed time alone.
+  accept-loop reap rather than relying on elapsed time alone. Test-runtime-only
+  response observers hold an already accepted shutdown before encoding, close
+  the real peer, and prove one and four concurrent acknowledgement writes fail
+  while the server still stops, removes its socket, and settles every handler
+  and descriptor. A one-shot response-encode `bad_alloc` proves the same stop
+  guarantee, while a pre-commit dispatch fault proves ordinary admission stays
+  open until a later shutdown is accepted.
 - Transport tests prove a peer-uid rejection remains connection-local even
   with unrelated ambient `errno`, a normal `request_stop` succeeds, and a
   non-stop fatal accept failure remains typed. They check close-on-exec on the

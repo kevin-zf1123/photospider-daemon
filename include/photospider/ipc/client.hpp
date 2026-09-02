@@ -168,7 +168,9 @@ class Client final {
    * @brief Calls `daemon.shutdown` and requests graceful local process exit.
    * @return Success after the daemon accepts shutdown.
    * @throws std::bad_alloc If encoding/result allocation fails.
-   * @note The current connection becomes unusable after the response.
+   * @note The current connection becomes unusable after the response. A
+   * transport failure may leave acceptance unknown to the client, but an
+   * already accepted daemon still completes its server stop path.
    */
   [[nodiscard]] Status daemon_shutdown();
 

@@ -136,7 +136,10 @@ struct Response final {
   ExecutionResult execution_result;
   /** @brief DaemonInfo result. */
   DaemonInfo daemon_info;
-  /** @brief Whether a successful response should stop the server after write.
+  /**
+   * @brief Whether Service accepted shutdown at its no-throw commit point.
+   * @note The server must stop after an accepted shutdown even when response
+   * encoding or the acknowledgement write fails.
    */
   bool shutdown_after_write = false;
 };

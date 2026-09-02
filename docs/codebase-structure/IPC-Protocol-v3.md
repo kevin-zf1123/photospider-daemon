@@ -217,11 +217,20 @@ package version, `unix-domain` transport, exact sorted method list, live
 Session/Job counts, fixed global concurrency, and the fixed retained-Session
 bound.
 
-`daemon.shutdown` acknowledges, stops the listener, interrupts active client
-connections, and lets `photospiderd` destroy the service. Service destruction
-requests cancellation, joins fixed workers, and releases every Session, Job,
-result, GraphContext, kernel execution resource, descriptor, and socket node.
-The next process starts with empty registries.
+`daemon.shutdown` is accepted at a no-throw Service commit after the complete
+success response and every fault-capable operation have been staged. The commit
+atomically closes later ordinary admission and marks that response as accepted;
+a pre-commit dispatch failure does neither. Concurrent shutdown requests may
+all be accepted and converge on the same monotonic state. The server captures
+acceptance before response encoding and then stops the listener from the
+handler's common no-throw tail after every acknowledgement outcome. Encoding
+failure, real write failure, or failure of a best-effort catch response cannot
+undo or strand accepted shutdown. A client that does not receive the success
+acknowledgement must treat the request outcome as unknown even though the server
+still completes an already accepted stop. Service destruction requests
+cancellation, joins fixed workers, and releases every Session, Job, result,
+GraphContext, kernel execution resource, descriptor, and socket node. The next
+process starts with empty registries.
 
 The POSIX executable blocks `SIGINT`/`SIGTERM` before constructing the Server
 or any worker and consumes them synchronously on a dedicated `sigwait` thread.

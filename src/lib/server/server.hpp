@@ -70,7 +70,8 @@ struct ServerConfig final {
  * @note Construction rejects every existing pathname and binds only an absent
  * entry. `run` blocks in accept until shutdown; destruction closes
  * connections, joins handlers, and removes the node only while its captured
- * device/inode generation still matches.
+ * device/inode generation still matches. Once Service accepts shutdown, the
+ * server stops even if acknowledgement encoding or writing fails.
  */
 class Server final {
  public:
@@ -123,7 +124,9 @@ class Server final {
    * preparation, or credential syscall failure stops admission unless
    * `request_stop()` already established normal shutdown. Handler-creation
    * failure joins every already-owned handler, removes the socket node, and
-   * then propagates.
+   * then propagates. A handler that captures accepted shutdown invokes the
+   * same idempotent stop path from its no-throw tail after any best-effort
+   * response attempt.
    */
   [[nodiscard]] Status run();
 
