@@ -634,6 +634,8 @@ class JobRegistry final {
       }
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
       test::observe_job_running();
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::JobPrimary);
 #endif
 
       if (record->cancellation.token().cancelled()) {
@@ -732,16 +734,24 @@ class JobRegistry final {
    * @brief Best-effort exception-fence terminal publication.
    * @param record Shared execution record.
    * @param code Failure category when cancellation is not active.
-   * @param reason Best available diagnostic.
+   * @param reason Borrowed diagnostic pointer, which may be null.
+   * @return No value.
    * @throws Nothing.
-   * @note If diagnostic allocation also fails, a no-allocation empty-message
-   * terminal status still wakes namespace close and releases the result.
+   * @note The call boundary performs no owned-string construction. Null is
+   * normalized to empty and every owned diagnostic/Status construction occurs
+   * inside the protected block. If construction fails, a no-allocation
+   * empty-message terminal status still wakes Session close and releases the
+   * result while preserving cancellation or the primary error category.
    */
   void finish_failure_safely(const std::shared_ptr<JobRecord>& record,
-                             ErrorCode code,
-                             const std::string& reason) noexcept {
+                             ErrorCode code, const char* reason) noexcept {
     try {
-      finish_failure(record, Status::failure(code, reason));
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::JobFailureStatus);
+#endif
+      const char* diagnostic = reason ? reason : "";
+      finish_failure(record, Status::failure(code, diagnostic));
     } catch (...) {
       try {
         std::lock_guard<std::mutex> lock(record->mutex);

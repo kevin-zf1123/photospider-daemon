@@ -70,6 +70,11 @@ cancellation source，并拒绝取消或 Session close 之后的 stale completio
 publication。调用 `job.release` 会移除终态记录和临时 result。允许普通进程全局
 concurrency limit 与 backpressure。
 
+Worker exception fence 接受 nullable borrowed diagnostic pointer，并只在受保护块内构造
+每个 owned string 与 `Status`。若标准异常的 diagnostic 为 null，则规范化为空 message。
+若 primary 或 failure-status construction 抛出异常，fallback 仍会发布 terminal failure、
+唤醒 close waiter、清除 result ownership，并保留 cancellation 或 primary error category。
+
 不存在 `JobAttemptId`、自动 retry、checkpoint、recovery journal、持久 Job
 specification、artifact id、output commit、receipt、按 tenant quota 或 restart 后
 保留状态。调用者 retry 是新 submit，并产生新 `JobId`。

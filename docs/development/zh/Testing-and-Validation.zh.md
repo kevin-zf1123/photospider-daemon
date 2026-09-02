@@ -44,6 +44,10 @@ sibling source target 或 private kernel include path。
   A 仍为 Running、B 的 Job 被移除，且 Session capacity 可立即复用。其 timeout path
   会先取消 A，再回收 close future，使失败快速清理；后续 daemon shutdown 不会保留一个
   等待 A 自然 delay 的 close handler。
+- Worker exception-fence test 会在 Running 后注入 allocation、standard、nonstandard 与
+  null-diagnostic primary failure，并独立叠加 secondary failure-status construction
+  fault。它们要求 terminal failure 保留 primary category，必要时使用空 fallback
+  diagnostic，`job.result` 可观察，close waiter 被释放，且 Job/Session 精确 cleanup。
 - Server test 覆盖正值 active-handler bound、typed backpressure、顺序运行期 reaping、
   exception fencing、shutdown join，以及带 descriptor/node cleanup 与 same-path rebind 的
   deterministic post-bind construction failure。每个 asynchronous Server test 都使用

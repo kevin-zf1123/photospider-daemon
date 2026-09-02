@@ -797,6 +797,132 @@ bool registration_failure_regression() {
          registration_failure_case(ProtocolFailureMode::Write);
 }
 
+/**
+ * @brief Exercises one worker primary exception and optional secondary status
+ * construction fault.
+ * @param primary Exception raised immediately after Running publication.
+ * @param secondary Exception raised before owned failure status construction.
+ * @param expected Expected terminal error category.
+ * @return True when terminal publication, result observation, and Session
+ * cleanup are exact.
+ * @throws std::bad_alloc If Service or request staging allocation fails.
+ * @note Status polling uses a bounded steady-clock deadline and yields rather
+ * than sleeping; a historical exception escape terminates this CTest process.
+ */
+bool worker_failure_case(test::ExceptionFenceFaultAction primary,
+                         test::ExceptionFenceFaultAction secondary,
+                         ps::ErrorCode expected) {
+  test::reset_exception_fence_faults();
+  internal::Service service(internal::ServiceConfig{1U, 4U, 1U, false});
+  internal::Request create;
+  create.request_id = 301U;
+  create.method = internal::Method::SessionCreate;
+  create.document = addition_document();
+  const internal::Response created = service.dispatch(create);
+  if (!created.status.ok()) {
+    return false;
+  }
+
+  test::arm_exception_fence_fault(test::ExceptionFenceFaultPoint::JobPrimary,
+                                  primary);
+  test::arm_exception_fence_fault(
+      test::ExceptionFenceFaultPoint::JobFailureStatus, secondary);
+  internal::Request submit;
+  submit.request_id = 302U;
+  submit.method = internal::Method::JobSubmit;
+  submit.session_id = created.session_id;
+  const internal::Response submitted = service.dispatch(submit);
+  if (!submitted.status.ok()) {
+    return false;
+  }
+
+  internal::Response terminal_status;
+  bool terminal_seen = false;
+  const auto deadline =
+      std::chrono::steady_clock::now() + kHandlerCleanupTimeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    internal::Request status;
+    status.request_id = 303U;
+    status.method = internal::Method::JobStatus;
+    status.job_id = submitted.job_id;
+    terminal_status = service.dispatch(status);
+    if (!terminal_status.status.ok()) {
+      return false;
+    }
+    if (terminal_status.job_status.state == ps::ipc::JobState::Failed ||
+        terminal_status.job_status.state == ps::ipc::JobState::Cancelled ||
+        terminal_status.job_status.state == ps::ipc::JobState::Succeeded) {
+      terminal_seen = true;
+      break;
+    }
+    std::this_thread::yield();
+  }
+  if (!terminal_seen ||
+      terminal_status.job_status.state != ps::ipc::JobState::Failed ||
+      terminal_status.job_status.outcome.code != expected ||
+      !terminal_status.job_status.outcome.message.empty()) {
+    return false;
+  }
+
+  internal::Request result;
+  result.request_id = 304U;
+  result.method = internal::Method::JobResult;
+  result.job_id = submitted.job_id;
+  const internal::Response failed_result = service.dispatch(result);
+  if (failed_result.status.ok() || failed_result.status.code != expected ||
+      !failed_result.status.message.empty()) {
+    return false;
+  }
+
+  internal::Request info;
+  info.request_id = 305U;
+  info.method = internal::Method::DaemonInfo;
+  const internal::Response retained = service.dispatch(info);
+  if (!retained.status.ok() || retained.daemon_info.active_sessions != 1U ||
+      retained.daemon_info.active_jobs != 1U) {
+    return false;
+  }
+
+  internal::Request close;
+  close.request_id = 306U;
+  close.method = internal::Method::SessionClose;
+  close.session_id = created.session_id;
+  const internal::Response closed = service.dispatch(close);
+  info.request_id = 307U;
+  const internal::Response settled = service.dispatch(info);
+  const bool passed =
+      closed.status.ok() && settled.status.ok() &&
+      settled.daemon_info.active_sessions == 0U &&
+      settled.daemon_info.active_jobs == 0U &&
+      test::exception_fence_fault_hits(
+          test::ExceptionFenceFaultPoint::JobPrimary) == 1U &&
+      test::exception_fence_fault_hits(
+          test::ExceptionFenceFaultPoint::JobFailureStatus) == 1U;
+  test::reset_exception_fence_faults();
+  return passed;
+}
+
+/**
+ * @brief Verifies worker primary/secondary exception fencing and null
+ * diagnostics.
+ * @return True when all standard, allocation, unknown, and null cases settle.
+ * @throws std::bad_alloc If a case cannot stage Service state.
+ */
+bool worker_failure_regression() {
+  return worker_failure_case(test::ExceptionFenceFaultAction::BadAlloc,
+                             test::ExceptionFenceFaultAction::BadAlloc,
+                             ps::ErrorCode::ResourceExhausted) &&
+         worker_failure_case(test::ExceptionFenceFaultAction::StandardException,
+                             test::ExceptionFenceFaultAction::BadAlloc,
+                             ps::ErrorCode::Internal) &&
+         worker_failure_case(test::ExceptionFenceFaultAction::UnknownException,
+                             test::ExceptionFenceFaultAction::BadAlloc,
+                             ps::ErrorCode::Internal) &&
+         worker_failure_case(test::ExceptionFenceFaultAction::NullDiagnostic,
+                             test::ExceptionFenceFaultAction::None,
+                             ps::ErrorCode::Internal);
+}
+
 }  // namespace
 
 /**
@@ -821,5 +947,6 @@ int main(int argc, char** argv) {
   PS_IPC_CHECK(shutdown_write_failure_regression(4U));
   PS_IPC_CHECK(shutdown_encode_failure_regression());
   PS_IPC_CHECK(registration_failure_regression());
+  PS_IPC_CHECK(worker_failure_regression());
   return 0;
 }

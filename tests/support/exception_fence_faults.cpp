@@ -28,6 +28,17 @@ class InjectedStandardException final : public std::exception {
   }
 };
 
+/** @brief Allocation-free standard exception with no diagnostic pointer. */
+class InjectedNullDiagnosticException final : public std::exception {
+ public:
+  /**
+   * @brief Returns no diagnostic bytes for the injected failure.
+   * @return Null, intentionally.
+   * @throws Nothing.
+   */
+  [[nodiscard]] const char* what() const noexcept override { return nullptr; }
+};
+
 /** @brief Nonstandard exception type for catch-all boundary coverage. */
 struct InjectedUnknownException final {};
 
@@ -182,6 +193,8 @@ void hit_exception_fence_fault(ExceptionFenceFaultPoint point) {
       throw std::bad_alloc();
     case ExceptionFenceFaultAction::StandardException:
       throw InjectedStandardException();
+    case ExceptionFenceFaultAction::NullDiagnostic:
+      throw InjectedNullDiagnosticException();
     case ExceptionFenceFaultAction::UnknownException:
       throw InjectedUnknownException();
   }

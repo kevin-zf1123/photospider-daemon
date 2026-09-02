@@ -68,6 +68,8 @@ enum class ExceptionFenceFaultAction : std::uint32_t {
   BadAlloc,
   /** @brief Raise one allocation-free `std::exception` subtype. */
   StandardException,
+  /** @brief Raise a standard exception whose `what()` result is null. */
+  NullDiagnostic,
   /** @brief Raise one type outside the `std::exception` hierarchy. */
   UnknownException,
 };
@@ -95,6 +97,7 @@ void arm_exception_fence_fault(ExceptionFenceFaultPoint point,
  * @brief Installs or clears deterministic shutdown-response observers.
  * @param ready Callback after Service dispatch and acceptance capture.
  * @param write Callback after a real normal-response write attempt.
+ * @return No value.
  * @throws Nothing.
  * @note Install before starting handler threads and clear only after every
  * handler joins. These callbacks exist only in the noninstalled test runtime.
@@ -106,6 +109,7 @@ void install_shutdown_response_observers(
 /**
  * @brief Installs or clears the deterministic Job-Running observer.
  * @param observer Callback after Running publication, or null to clear.
+ * @return No value.
  * @throws Nothing.
  * @note Install before submit and clear only after the observed worker exits
  * its callback. This seam exists only in the noninstalled test runtime.
@@ -125,6 +129,7 @@ void install_session_create_pending_observer(
 
 /**
  * @brief Invokes the installed post-Running test observer.
+ * @return No value.
  * @throws Nothing; every observer exception is fenced.
  * @note Production orchestration objects contain no corresponding callback.
  */
@@ -141,6 +146,7 @@ void observe_session_create_pending() noexcept;
 /**
  * @brief Invokes the installed post-dispatch response observer.
  * @param accepted_shutdown Whether Service accepted daemon shutdown.
+ * @return No value.
  * @throws Any exception raised by the installed test observer.
  * @note Production server objects contain no corresponding callback.
  */
@@ -150,6 +156,7 @@ void observe_shutdown_response_ready(bool accepted_shutdown);
  * @brief Invokes the installed real-write outcome observer.
  * @param accepted_shutdown Whether Service accepted daemon shutdown.
  * @param status Exact product `write_frame` result.
+ * @return No value.
  * @throws Any exception raised by the installed test observer.
  * @note Production server objects contain no corresponding callback.
  */
@@ -159,8 +166,10 @@ void observe_shutdown_response_write(bool accepted_shutdown,
 /**
  * @brief Records one boundary hit and raises an armed one-shot exception.
  * @param point Exact instrumented boundary.
+ * @return No value.
  * @throws std::bad_alloc For `BadAlloc`.
- * @throws std::exception subtype For `StandardException`.
+ * @throws std::exception subtype For `StandardException` or
+ * `NullDiagnostic`.
  * @throws A private nonstandard type for `UnknownException`.
  * @note The point is disarmed before the exception is raised.
  */
