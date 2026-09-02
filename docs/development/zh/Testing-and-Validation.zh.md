@@ -50,6 +50,14 @@ sibling source target 或 private kernel include path。
   随后旧 reader 获得精确 Value，而不是 `InvalidArgument`。No-throw JobRecord retirement
   observer/counter 证明 physical state 只在每个 registry、worker、handler 与 local shared
   owner 都释放后析构；condition-variable/future barrier 建立全部顺序，不使用 sleep。
+- Session-close/final-publication arbitration test 使用只存在于不安装 test runtime 的
+  no-throw、一次性 JobId-filtered seam。Worker-first 方向会让 worker 在完成 cancellation
+  check 后持有 JobRecord mutex，同时 close 擦除 registry visibility；close 在 worker 发布
+  `Succeeded` 前不能请求 cancellation，旧 reader 会取得精确 Value。Close-first 方向会让
+  close 在同一 mutex 下、cancel 前停住，而 worker 到达最终 pre-lock boundary；释放 close
+  后 cancellation 胜出，因此 close 与旧 reader 都观察到不含 result 的 `Cancelled`。
+  两个方向都只用 condition variable 与 bounded future 建立顺序，不使用 sleep；fresh
+  lookup 保持 `NotFound`，最终 retirement 仍精确发生一次。
 - Worker exception-fence test 会在 Running 后注入 allocation、standard、nonstandard 与
   null-diagnostic primary failure，并独立叠加 secondary failure-status construction
   fault。它们要求 terminal failure 保留 primary category，必要时使用空 fallback
@@ -101,8 +109,9 @@ runtime source 列表，并加入 fixed exception controller。`test_ipc_codec`�
 `test_local_daemon` 与 `test_exception_fences` 只链接这一不安装的 static variant；正常
 binary 与 package consumer 只链接 production target。任何 executable 都不会同时链接
 两个 variant。codec count observer、arithmetic probe、pending-Session-create observer、
-Job-result after-find/record-retirement observer 与 Session/worker fault point 只存在于
-private test-runtime macro 下。
+Job-result after-find/record-retirement observer、Job final-publication/Session-close
+cancellation arbitration observer 与 Session/worker fault point 只存在于 private
+test-runtime macro 下。
 
 修改 private lifecycle seam 后，须对 testing-on 与 testing-off build 的 production
 archive 手动执行 `ar -t`、demangled `nm` 与 `strings` 检查。产品中不得存在 test

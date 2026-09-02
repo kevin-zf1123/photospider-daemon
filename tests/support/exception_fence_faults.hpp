@@ -22,6 +22,42 @@ using ShutdownResponseWriteObserver = void (*)(bool accepted_shutdown,
 using JobRunningObserver = void (*)();
 
 /**
+ * @brief Test-only final-publication boundaries for one filtered Job.
+ *
+ * @note Both points exist only in the noninstalled test runtime. The latter is
+ * reached while the JobRecord mutex is held and only after cancellation was
+ * observed false.
+ */
+enum class JobFinalPublicationPoint : std::uint32_t {
+  /** @brief Execution succeeded and the worker is about to lock the record. */
+  BeforeRecordLock = 0U,
+  /** @brief The worker holds the record lock after its cancellation check. */
+  AfterCancellationCheck,
+};
+
+/**
+ * @brief Test-only no-throw observer at one final-publication boundary.
+ * @param id Exact filtered JobId being finalized.
+ * @param point Exact worker boundary selected at installation.
+ * @return No value.
+ * @throws Nothing by function type contract.
+ * @note The controller invokes this observer at most once for the installed
+ * JobId and point.
+ */
+using JobFinalPublicationObserver =
+    void (*)(JobId, JobFinalPublicationPoint) noexcept;  // NOLINT
+
+/**
+ * @brief Test-only no-throw observer before Session close cancels one Job.
+ * @param id Exact filtered JobId selected for nonterminal cancellation.
+ * @return No value.
+ * @throws Nothing by function type contract.
+ * @note Correct production-equivalent ordering invokes this seam while the
+ * JobRecord mutex is held; the controller invokes it at most once.
+ */
+using SessionCloseCancellationObserver = void (*)(JobId id) noexcept;
+
+/**
  * @brief Test-only observer after a successful Job-result find and before the
  * record mutex.
  * @param id Exact filtered JobId whose shared record has been retained.
@@ -140,6 +176,33 @@ void install_shutdown_response_observers(
 void install_job_running_observer(JobRunningObserver observer) noexcept;
 
 /**
+ * @brief Installs or clears one filtered, one-shot final-publication seam.
+ * @param id Exact JobId to observe; ignored when `observer` is null.
+ * @param point Exact final-publication boundary to observe.
+ * @param observer No-throw callback, or null to clear.
+ * @return No value.
+ * @throws Nothing.
+ * @note Install after submit while the target worker is held at an earlier
+ * deterministic boundary. Reconfigure only after the prior callback exits.
+ */
+void install_job_final_publication_observer(
+    JobId id, JobFinalPublicationPoint point,
+    JobFinalPublicationObserver observer) noexcept;
+
+/**
+ * @brief Installs or clears one filtered Session-close cancellation seam.
+ * @param id Exact popped/running JobId to observe; ignored when null.
+ * @param observer No-throw callback before its cancellation decision, or null
+ * to clear.
+ * @return No value.
+ * @throws Nothing.
+ * @note Install before close and reconfigure only after the observed close
+ * handler exits the callback.
+ */
+void install_session_close_cancellation_observer(
+    JobId id, SessionCloseCancellationObserver observer) noexcept;
+
+/**
  * @brief Installs or clears one filtered, one-shot Job-result after-find seam.
  * @param id Exact JobId to observe; ignored when `observer` is null.
  * @param observer Callback after successful find and before record locking, or
@@ -183,6 +246,26 @@ void install_session_create_pending_observer(
  * @note Production orchestration objects contain no corresponding callback.
  */
 void observe_job_running() noexcept;
+
+/**
+ * @brief Invokes the installed one-shot final-publication observer.
+ * @param id JobId being finalized.
+ * @param point Exact worker boundary currently reached.
+ * @return No value.
+ * @throws Nothing.
+ * @note The production runtime has no corresponding call or controller.
+ */
+void observe_job_final_publication(JobId id,
+                                   JobFinalPublicationPoint point) noexcept;
+
+/**
+ * @brief Invokes the installed one-shot Session-close cancellation observer.
+ * @param id Popped/running JobId whose cancellation is being arbitrated.
+ * @return No value.
+ * @throws Nothing.
+ * @note The production runtime has no corresponding call or controller.
+ */
+void observe_session_close_cancellation(JobId id) noexcept;
 
 /**
  * @brief Invokes the installed one-shot observer for a matching retained Job.

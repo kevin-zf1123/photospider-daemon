@@ -63,6 +63,17 @@ never a sibling source target or private kernel include path.
   JobRecord retirement observer/counter proves physical state is destroyed only
   after every registry, worker, handler, and local shared owner releases it;
   condition-variable/future barriers establish ordering without sleeps.
+- Session-close/final-publication arbitration tests use no-throw, one-shot,
+  JobId-filtered seams only in the noninstalled test runtime. In the
+  worker-first direction, the worker is held under the JobRecord mutex after
+  its cancellation check while close erases registry visibility; close cannot
+  request cancellation until the worker publishes `Succeeded`, and an old
+  reader receives the exact Value. In the close-first direction, close is held
+  under the same mutex before cancellation while the worker reaches its final
+  pre-lock boundary; releasing close makes cancellation win, so close and the
+  old reader observe `Cancelled` with no result. Condition variables and
+  bounded futures establish both orders without sleeps, while fresh lookups
+  remain `NotFound` and final retirement remains exactly once.
 - Worker exception-fence tests inject allocation, standard, nonstandard, and
   null-diagnostic primary failures after Running, with independent secondary
   failure-status construction faults. They require a terminal failure with the
@@ -124,6 +135,7 @@ controller. `test_ipc_codec`, `test_local_daemon`, and
 binaries and package consumers link only the production target. No executable
 links both variants. The codec count observer, arithmetic probe,
 pending-Session-create observer, Job-result after-find/record-retirement
+observers, Job final-publication/Session-close cancellation arbitration
 observers, and Session/worker fault points exist only under the private
 test-runtime macro.
 
