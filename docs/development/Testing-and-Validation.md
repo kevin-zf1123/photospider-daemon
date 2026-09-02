@@ -65,17 +65,25 @@ never a sibling source target or private kernel include path.
   five-second cooperative Job reaches Running, and invoke `daemon.shutdown`.
   They require bounded `exit(0)`, generation-checked socket removal, and
   cancellation/join well before the delayed operation could drain naturally.
-- Installed-consumer tests prove that `bin/photospiderd` is installed while
-  only `PhotospiderDaemon::client` appears in the CMake export set. A dedicated
-  `BUILD_SHARED_LIBS=ON` package gate also proves that this target remains a
-  usable static archive and creates no shared client ABI.
+- Installed-consumer tests prove that portable `bin/photospiderd` is installed
+  while only `PhotospiderDaemon::client` appears in the CMake export set. They
+  clear Linux and Darwin loader-path environment variables and execute the
+  installed runtime's `--help`, rather than treating file existence as runtime
+  evidence. Local package checks cover static/shared kernels in same/separate
+  prefixes; CI runs the separate-prefix static/shared matrix on Ubuntu and
+  macOS. Shared-kernel inspection requires Linux RPATH/RUNPATH or Darwin
+  `LC_RPATH` to include the loader-relative daemon libdir plus the actual
+  non-system imported kernel directory. The client remains a static archive
+  independent of `BUILD_SHARED_LIBS` and creates no shared client ABI.
 
 The nested package consumer exposes a generator-aware
 `run_photospider_daemon_consumer` target whose command uses the executable
 target-file expression. The outer gate passes its exact generator,
 platform/toolset when present, and active configuration, then builds that run
 target. Single-config and multi-config layouts therefore require no guessed
-build root, configuration directory, executable suffix, or bundle path.
+build root, configuration directory, executable suffix, or bundle path. The
+outer installed-runtime check likewise receives the configured bindir,
+libdir, and executable suffix instead of hard-coding a host layout.
 
 ## Product and test runtime separation
 

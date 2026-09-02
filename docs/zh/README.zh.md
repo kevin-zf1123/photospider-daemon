@@ -62,6 +62,14 @@ cmake --install build --prefix /absolute/daemon-prefix
 若只能看到 source checkout 或 private kernel header，daemon configure 必须失败。
 Test 使用 installed package 导出的公开 compile/execute/Value facade。
 
+在 Linux 与 Darwin 上，installed `photospiderd` 会携带指向
+`../${CMAKE_INSTALL_LIBDIR}` 的 portable loader-relative search path；当 imported kernel
+是 separate prefix 中的 shared library 时，还会携带实际的 non-system linked kernel
+directory。Linux 使用 `$ORIGIN`，Darwin 使用 `@loader_path`；Windows 不设置 RPATH。
+Installed-consumer gate 会先清除 `LD_LIBRARY_PATH`、`DYLD_LIBRARY_PATH` 与
+`DYLD_FALLBACK_LIBRARY_PATH`，再执行 installed runtime 的 `--help`，因此 shared kernel
+不能依赖 ambient developer loader state 通过测试。
+
 Executable 接受正值 `--max-sessions`、`--max-jobs`、`--max-concurrency` 与
 `--max-connections` bound。容量拒绝返回 typed `ResourceExhausted`，且不创建
 Session、Job 或 handler state。

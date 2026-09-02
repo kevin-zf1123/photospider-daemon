@@ -76,6 +76,27 @@ add_executable(photospiderd apps/photospiderd/main.cpp)
 target_compile_features(photospiderd PRIVATE cxx_std_17)
 target_include_directories(photospiderd PRIVATE src/lib)
 target_link_libraries(photospiderd PRIVATE photospider_daemon_client)
+get_target_property(_photospider_kernel_type Photospider::kernel TYPE)
+if((APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux") AND
+   _photospider_kernel_type STREQUAL "SHARED_LIBRARY")
+  target_link_directories(
+    photospiderd PRIVATE "$<TARGET_FILE_DIR:Photospider::kernel>")
+endif()
+if(APPLE)
+  set_target_properties(
+    photospiderd
+    PROPERTIES INSTALL_RPATH "@loader_path/../${CMAKE_INSTALL_LIBDIR}"
+               INSTALL_RPATH_USE_LINK_PATH TRUE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set_target_properties(
+    photospiderd
+    PROPERTIES INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+               INSTALL_RPATH_USE_LINK_PATH TRUE)
+endif()
+# The shared imported target contributes its real directory to the link search
+# set so INSTALL_RPATH_USE_LINK_PATH appends it. CMake excludes project and
+# implicit platform directories, preventing system search paths from being
+# baked in while preserving a kernel installed under a separate prefix.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(photospiderd PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
@@ -288,5 +309,8 @@ if(BUILD_TESTING)
       "-DPHOTOSPIDER_GENERATOR:STRING=${CMAKE_GENERATOR}"
       "-DPHOTOSPIDER_GENERATOR_PLATFORM:STRING=${CMAKE_GENERATOR_PLATFORM}"
       "-DPHOTOSPIDER_GENERATOR_TOOLSET:STRING=${CMAKE_GENERATOR_TOOLSET}"
+      "-DPHOTOSPIDER_DAEMON_INSTALL_BINDIR:STRING=${CMAKE_INSTALL_BINDIR}"
+      "-DPHOTOSPIDER_DAEMON_INSTALL_LIBDIR:STRING=${CMAKE_INSTALL_LIBDIR}"
+      "-DPHOTOSPIDER_DAEMON_EXECUTABLE_SUFFIX:STRING=${CMAKE_EXECUTABLE_SUFFIX}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunInstalledConsumer.cmake")
 endif()

@@ -18,18 +18,24 @@ Daemon CI：
 
 1. 存在 matching kernel feature branch 时 checkout 它，否则在独立目录 checkout
    kernel main；
-2. 把 kernel 配置、构建并安装到 fresh prefix；
+2. 在 Ubuntu 与 macOS 上把 static/shared 两种 kernel 配置、构建并安装到 fresh
+   prefix；
 3. 只使用该 prefix 配置 daemon；
-4. build、运行 CTest、install，并运行 external typed-client consumer；
+4. build、运行 CTest、install、运行 external typed-client consumer，并在清除所有受支持
+   loader environment override 后执行 installed `photospiderd --help`；
 5. 运行 binary-codec、socket ownership/SIGPIPE、real-process signal 与 RPC shutdown、
    Session/Job/cancellation/result/restart、executable-help 与 installed-client test；
 6. 针对相同 installed-kernel boundary 分别运行 bounded Clang ASAN/TSAN
    configure/build/CTest job，并具备 deterministic test teardown 与 per-test timeout
    protection。
 
-Installed-client gate 还证明 `bin/photospiderd` 存在，同时 generated export set 只包含
-`PhotospiderDaemon::client`，不包含 executable/server target。长期 frame/codec fuzz
-target 是手动 developer target，不属于 default build、CTest 或 migration-residue gate。
+Installed-client gate 还证明 portable bindir 中的 executable 可以实际启动，同时
+generated export set 只包含 `PhotospiderDaemon::client`，不包含 executable/server target。
+对于 separate isolated prefix 中的 shared kernel，Linux `$ORIGIN` 或 Darwin
+`@loader_path` 保持 same-prefix layout，non-system imported link directory 则保持
+separate-prefix layout。Windows 不定义 RPATH。Sanitizer job 继续采用 focused static-kernel
+形态，不随 package matrix 成倍扩展。长期 frame/codec fuzz target 是手动 developer
+target，不属于 default build、CTest 或 migration-residue gate。
 
 没有 job 构建 archived kernel 或执行 old/new wire combination。不存在 frozen
 four-cell gate。
