@@ -410,11 +410,17 @@ std::string socket_path() {
 }
 
 /**
- * @brief Closed failed-response variants served to the public Client.
+ * @brief Closed one-shot exchange behaviors exercised through the public
+ * Client.
  *
- * @note Every variant is a complete non-Ok response. Only `FailedSentinel`
- * uses the protocol-error sentinel; the other variants deliberately violate
- * one ordinary response-correlation component.
+ * `FailedSentinel`, `BusinessNotFound`, `WrongRequestId`, and `WrongMethod`
+ * encode and send a complete non-Ok response. `BusinessNotFound` preserves
+ * ordinary correlation; only the two `Wrong*` variants violate one ordinary
+ * correlation component. `CloseWithoutResponse` instead cleanly closes after
+ * reading and decoding the request and never enters response encoding.
+ *
+ * @note The enum selects fixture behavior only and does not alter production
+ * transport or codec behavior.
  */
 enum class PublicClientResponseKind : std::uint8_t {
   /** @brief Legal zero-id/daemon.info failed protocol sentinel. */
@@ -520,13 +526,18 @@ struct PublicClientObservation final {
 };
 
 /**
- * @brief Encodes one complete failed fake-server response.
- * @param kind Legal sentinel or one ordinary correlation mismatch.
- * @param request Completely decoded daemon.info request from the Client.
+ * @brief Encodes one complete non-Ok fake-server response.
+ * @param kind Response-producing behavior: the legal sentinel, correlated
+ * business `NotFound`, or one ordinary correlation mismatch.
+ * `CloseWithoutResponse` must not be passed to this helper.
+ * @param request Completely decoded `daemon.info` request whose correlation is
+ * preserved except by the selected `Wrong*` behavior.
  * @return Bounded response payload or typed fixture-encoding failure.
  * @throws std::bad_alloc If response or diagnostic allocation fails.
- * @note Ordinary mismatch variants use `encode_response`, remain non-Ok, and
- * carry no success-only payload.
+ * @note `FailedSentinel` uses `encode_protocol_error`; the correlated business
+ * response and both mismatch variants use `encode_response`. Every encoded
+ * response is non-Ok and carries no success-only payload. The caller owns all
+ * descriptor and thread cleanup if encoding fails or throws.
  */
 ps::Result<std::vector<std::uint8_t>> encode_public_client_response(
     PublicClientResponseKind kind, const ps::ipc::internal::Request& request) {
@@ -560,14 +571,20 @@ ps::Result<std::vector<std::uint8_t>> encode_public_client_response(
 }
 
 /**
- * @brief Runs one complete public daemon.info call against a fake Unix server.
- * @param kind Failed response correlation served after the request is decoded.
+ * @brief Runs one complete public `daemon.info` call against a fake Unix
+ * server.
+ * @param kind One-shot exchange behavior selected after the request is fully
+ * read and decoded. Response-producing variants are encoded and sent;
+ * `CloseWithoutResponse` cleanly closes without calling the response encoder.
  * @return Explicit server, result, status, and connection observations.
  * @throws std::bad_alloc If fixture, protocol, or result allocation fails.
  * @throws std::system_error If the one-shot responder thread cannot start or
  * join.
- * @note The request traverses public Client, frame I/O, and the real codec. All
- * descriptors use RAII; exceptional paths disconnect before joining.
+ * @note The request traverses the public Client, frame I/O, and the real codec.
+ * Listener, Client, and accepted-stream descriptors use RAII. The responder
+ * catches every exception; caller-side unwinding disconnects before joining,
+ * while the normal path joins before reading `server_completed`, providing
+ * thread synchronization and exact descriptor/thread cleanup.
  */
 PublicClientObservation observe_public_client_response(
     PublicClientResponseKind kind) {
