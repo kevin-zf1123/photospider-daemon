@@ -1179,7 +1179,9 @@ Response Service::dispatch(const Request& request) noexcept {
       test::hit_exception_fence_fault(
           test::ExceptionFenceFaultPoint::DispatchFailureStatus);
 #endif
-      response.status = Status::failure(ErrorCode::Internal, error.what());
+      const char* diagnostic = error.what();
+      response.status = Status::failure(
+          ErrorCode::Internal, diagnostic == nullptr ? "" : diagnostic);
     } catch (...) {
       fail_response_without_allocation(response, ErrorCode::Internal);
     }

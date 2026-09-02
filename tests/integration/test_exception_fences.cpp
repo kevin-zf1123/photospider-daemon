@@ -200,6 +200,51 @@ bool dispatch_double_fault_regression() {
 }
 
 /**
+ * @brief Proves dispatch normalizes a null standard-exception diagnostic.
+ * @return True when the failed response is empty, correlated, and the same
+ * Service remains usable.
+ * @throws std::bad_alloc If Service or request staging allocation fails.
+ * @note The primary fault follows complete `daemon.info` response staging, so
+ * the catch must clear every success-only field without accepting shutdown.
+ */
+bool dispatch_null_diagnostic_regression() {
+  test::reset_exception_fence_faults();
+  internal::Service service(internal::ServiceConfig{1U, 4U, 2U, false});
+  test::arm_exception_fence_fault(
+      test::ExceptionFenceFaultPoint::DispatchPrimary,
+      test::ExceptionFenceFaultAction::NullDiagnostic);
+  test::arm_exception_fence_fault(
+      test::ExceptionFenceFaultPoint::DispatchFailureStatus,
+      test::ExceptionFenceFaultAction::None);
+
+  internal::Request failed_info;
+  failed_info.request_id = 92U;
+  failed_info.method = internal::Method::DaemonInfo;
+  const internal::Response failed = service.dispatch(failed_info);
+  const bool fenced =
+      failed.request_id == failed_info.request_id &&
+      failed.method == internal::Method::DaemonInfo &&
+      failed.status.code == ps::ErrorCode::Internal &&
+      failed.status.message.empty() && success_payload_is_empty(failed) &&
+      !failed.shutdown_after_write &&
+      test::exception_fence_fault_hits(
+          test::ExceptionFenceFaultPoint::DispatchPrimary) == 1U &&
+      test::exception_fence_fault_hits(
+          test::ExceptionFenceFaultPoint::DispatchFailureStatus) == 1U;
+
+  test::reset_exception_fence_faults();
+  internal::Request healthy_info;
+  healthy_info.request_id = 93U;
+  healthy_info.method = internal::Method::DaemonInfo;
+  const internal::Response healthy = service.dispatch(healthy_info);
+  return fenced && healthy.request_id == healthy_info.request_id &&
+         healthy.method == internal::Method::DaemonInfo &&
+         healthy.status.ok() &&
+         healthy.daemon_info.protocol_version == ps::ipc::kProtocolVersion &&
+         !healthy.shutdown_after_write;
+}
+
+/**
  * @brief Proves shutdown dispatch commits only after the primary fault seam.
  * @return True when failed shutdown leaves admission open and a later shutdown
  * commits normally.
@@ -942,6 +987,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   PS_IPC_CHECK(dispatch_double_fault_regression());
+  PS_IPC_CHECK(dispatch_null_diagnostic_regression());
   PS_IPC_CHECK(shutdown_dispatch_commit_regression());
   PS_IPC_CHECK(shutdown_write_failure_regression(1U));
   PS_IPC_CHECK(shutdown_write_failure_regression(4U));
