@@ -62,7 +62,20 @@ Inside the payload, integers are little-endian. Text and byte vectors use a
 little-endian uint32 byte count followed by exact bytes. Text is canonical
 UTF-8 and subject to its field-specific limit. Booleans are exactly zero or
 one. Floating parameters preserve exact IEEE-754 binary64 bits. Counts are
-validated before allocation or iteration.
+validated before allocation, map insertion, or iteration. After the semantic
+maximum, each count must satisfy
+`count <= (remaining - required_suffix) / minimum_entry_bytes`; suffix
+subtraction is checked first and no multiplication is used. This single rule
+covers Workflow parameters/nodes/inputs/outputs, Value shape/Region/strides
+and facets, selected-backend maps, named Values, fallback reasons, operation
+timings, and daemon methods. Transfer count, transfer bytes, and peak live
+bytes remain three fixed uint64 scalars rather than a collection count.
+
+A count that cannot fit the unread bytes is `InvalidArgument`, even when it is
+below its semantic maximum, and is rejected before any count-sized allocation.
+The byte fence does not relabel a genuinely admissible allocation failure:
+private codec allocation still throws `std::bad_alloc`, and the server handler
+exception fence reports that exhaustion as `ResourceExhausted`.
 
 ## Request and response header
 

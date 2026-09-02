@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,6 +21,78 @@ enum class Method : std::uint8_t {
   DaemonInfo = 8U,
   DaemonShutdown = 9U,
 };
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+namespace codec_test {
+
+/**
+ * @brief Identifies one allocation-capable decoded wire-count boundary.
+ *
+ * @note This private test-only inventory is absent from installed production
+ * objects and exists solely to prove malformed counts fail before reserve,
+ * container insertion, or count-controlled iteration.
+ */
+enum class DecoderCountKind : std::uint8_t {
+  /** @brief Workflow node vector count. */
+  WorkflowNodes,
+  /** @brief Per-node input vector count. */
+  WorkflowInputs,
+  /** @brief Per-node parameter map count. */
+  WorkflowParameters,
+  /** @brief Workflow output vector count. */
+  WorkflowOutputs,
+  /** @brief Value shape, Region, and stride rank. */
+  ValueAxes,
+  /** @brief Value facet vector count. */
+  ValueFacets,
+  /** @brief Selected-backend map count. */
+  DiagnosticBackends,
+  /** @brief Fallback-reason vector count. */
+  DiagnosticFallbackReasons,
+  /** @brief Operation-timing vector count. */
+  DiagnosticOperationTimings,
+  /** @brief Named execution-result Value map count. */
+  ResultNamedValues,
+  /** @brief Daemon method-inventory vector count. */
+  DaemonMethods,
+};
+
+/**
+ * @brief Observes a count only after its semantic and remaining-byte fences.
+ * @param kind Exact allocation-capable collection boundary.
+ * @param count Validated wire count about to control allocation or iteration.
+ * @throws Nothing.
+ * @note Observers must not call codec entry points and run synchronously on the
+ * decoding thread.
+ */
+using DecoderCountObserver = void (*)(DecoderCountKind kind,
+                                      std::uint64_t count) noexcept;
+
+/**
+ * @brief Installs or clears the process-global decoder count observer.
+ * @param observer Callback to install, or null to clear.
+ * @throws Nothing.
+ * @note Tests must serialize installation and clear the observer before
+ * teardown. The seam is compiled only into the noninstalled test runtime.
+ */
+void install_decoder_count_observer(DecoderCountObserver observer) noexcept;
+
+/**
+ * @brief Evaluates the production structural byte contract for one count.
+ * @param kind Exact count-controlled collection boundary.
+ * @param count Candidate entry count.
+ * @param remaining_bytes Exact unread bytes available after the count field.
+ * @return True exactly when the entries and fixed suffix can structurally fit.
+ * @throws Nothing.
+ * @note This arithmetic probe shares the production overflow-safe predicate;
+ * semantic maxima remain the responsibility of each actual decoder call site.
+ */
+[[nodiscard]] bool decoder_count_fits(DecoderCountKind kind,
+                                      std::uint64_t count,
+                                      std::size_t remaining_bytes) noexcept;
+
+}  // namespace codec_test
+#endif
 
 /**
  * @brief Fully decoded version-three request.
@@ -82,6 +155,8 @@ struct Response final {
  * @param payload Frame payload bytes.
  * @return Owned request or malformed-frame failure.
  * @throws std::bad_alloc If decoded storage allocation fails.
+ * @note Count fields are fenced against remaining bytes before allocation,
+ * insertion, or iteration; structural mismatches return InvalidArgument.
  */
 [[nodiscard]] Result<Request> decode_request(
     const std::vector<std::uint8_t>& payload);
@@ -103,7 +178,8 @@ struct Response final {
  * @param expected_request_id Nonzero correlation id sent by the client.
  * @return Owned response or malformed/correlation failure.
  * @throws std::bad_alloc If decoded storage allocation fails.
- * @note Method and correlation mismatches invalidate the client connection.
+ * @note Method/correlation mismatches invalidate the client connection. Count
+ * fields are fenced against remaining bytes before allocation or iteration.
  */
 [[nodiscard]] Result<Response> decode_response(
     const std::vector<std::uint8_t>& payload, Method expected_method,

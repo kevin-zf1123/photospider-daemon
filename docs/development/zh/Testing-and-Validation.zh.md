@@ -15,7 +15,12 @@ sibling source target 或 private kernel include path。
 
 - Binary codec test 覆盖精确 enum、range、UTF-8、duplicate field、trailing byte、
   request correlation 与 protocol-error sentinel。One-shot fake Unix server 证明 public
-  Client 返回完整读取的 sentinel typed status，并 reset descriptor。
+  Client 返回完整读取的 sentinel typed status，并 reset descriptor。Table-driven boundary
+  matrix 覆盖 parameter、node、input、output、Value axis/facet、backend map、named Value、
+  fallback reason、operation timing 和 daemon method，并逐类检查
+  maximum-count/empty、one-byte-short、one-minimum-entry 与
+  semantic-maximum-plus-one。未安装的 count observer 证明 malformed node/timing 会在其
+  large reserve point 前拒绝。
 - 真实 Unix-socket test 覆盖 oversized `0xffffffff`、truncated、duplicate、unknown-enum、
   invalid-UTF-8 与 trailing-byte request。完整十一字节 header 后发生 body EOF 时保留
   correlation；incomplete header 只使用 sentinel。Server 返回一个 typed failure 后关闭，
@@ -52,9 +57,11 @@ sibling source target 或 private kernel include path。
 Installed `PhotospiderDaemon::client` 与正常 `photospiderd` executable 始终使用不含
 test control 的 production object。启用 `BUILD_TESTING=ON` 时，
 `photospider_daemon_test_runtime` 在 `PHOTOSPIDER_DAEMON_TEST_RUNTIME` 下独立编译完整
-runtime source 列表，并加入 fixed exception controller。`test_local_daemon` 与
-`test_exception_fences` 只链接这一不安装的 static variant；正常 binary 与 package
-consumer 只链接 production target。任何 executable 都不会同时链接两个 variant。
+runtime source 列表，并加入 fixed exception controller。`test_ipc_codec`、
+`test_local_daemon` 与 `test_exception_fences` 只链接这一不安装的 static variant；正常
+binary 与 package consumer 只链接 production target。任何 executable 都不会同时链接
+两个 variant。codec count observer 与 arithmetic probe 只存在于 private test-runtime
+macro 下。
 
 修改 private lifecycle seam 后，须对 testing-on 与 testing-off build 的 production
 archive 手动执行 `ar -t`、demangled `nm` 与 `strings` 检查。产品中不得存在 test
@@ -92,9 +99,11 @@ sanitizer result。
 ## 手动 frame/codec fuzz
 
 `photospider_daemon_frame_codec_fuzz` 是长期手动 libFuzzer target，覆盖 bounded
-request/protocol-error decoding 与真实 stream-frame reader。它使用
-`EXCLUDE_FROM_ALL`，绝不注册到 CTest，并要求 Clang。若平台 sanitizer runtime
-支持，也可与 daemon ASAN mode 组合：
+request/protocol-error decoding、`job.result`/`daemon.info` response decoding 与真实
+stream-frame reader。response path 包含 named Value、Value rank/facet、backend map、
+fallback reason、operation timing 与 daemon method count。它使用 `EXCLUDE_FROM_ALL`，
+绝不注册到 CTest，并要求 Clang。若平台 sanitizer runtime 支持，也可与 daemon ASAN
+mode 组合：
 
 ```bash
 cmake -S . -B <fuzz-build> -DCMAKE_CXX_COMPILER=clang++ \
@@ -107,10 +116,12 @@ cp -R tests/fuzz/corpus/frame_codec/. "$ps_daemon_fuzz_corpus"/
   "$ps_daemon_fuzz_corpus" -runs=1000 -max_len=4096
 ```
 
-维护中的 seed corpus 是 `tests/fuzz/corpus/frame_codec/`。调用者选择的 crash/artifact
-directory 保持 untracked。Fuzzing 补充 deterministic malformed real-socket regression，
-但不能替代后者。使用确实提供 libFuzzer runtime 的 Clang distribution；temporary
-working corpus 可避免 generated mutation 进入 maintained seed。
+维护中的 seed corpus 是 `tests/fuzz/corpus/frame_codec/`。其中 `hex:` seed 会 materialize
+定向的 `job.result` 与 `daemon.info` count payload，普通和变异后的输入仍作为 raw fuzz
+bytes。调用者选择的 crash/artifact directory 保持 untracked。Fuzzing 补充
+deterministic malformed real-socket regression，但不能替代后者。使用确实提供
+libFuzzer runtime 的 Clang distribution；temporary working corpus 可避免 generated
+mutation 进入 maintained seed。
 
 ## CTest 所有权
 

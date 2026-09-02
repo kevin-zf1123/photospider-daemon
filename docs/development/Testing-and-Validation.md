@@ -18,7 +18,12 @@ never a sibling source target or private kernel include path.
 - Binary codec tests cover exact enums, ranges, UTF-8, duplicate fields,
   trailing bytes, request correlation, and the protocol-error sentinel. A
   one-shot fake Unix server proves the public Client returns a completely read
-  sentinel's typed status and resets its descriptor.
+  sentinel's typed status and resets its descriptor. A table-driven boundary
+  matrix covers parameters, nodes, inputs, outputs, Value axes/facets,
+  backend maps, named Values, fallback reasons, operation timings, and daemon
+  methods with maximum-count/empty, one-byte-short, one-minimum-entry, and
+  semantic-maximum-plus-one cases. A noninstalled count observer proves the
+  malformed node and timing cases reject before their large reserve points.
 - Real Unix-socket tests cover oversized `0xffffffff`, truncated, duplicate,
   unknown-enum, invalid-UTF-8, and trailing-byte requests. A complete eleven-
   byte header followed by body EOF preserves correlation; an incomplete header
@@ -62,9 +67,11 @@ The installed `PhotospiderDaemon::client` and normal `photospiderd` executable
 always use test-control-free production objects. With `BUILD_TESTING=ON`,
 `photospider_daemon_test_runtime` independently compiles the complete runtime
 source list under `PHOTOSPIDER_DAEMON_TEST_RUNTIME` and adds the fixed exception
-controller. `test_local_daemon` and `test_exception_fences` link only that
-noninstalled static variant; normal binaries and package consumers link only
-the production target. No executable links both variants.
+controller. `test_ipc_codec`, `test_local_daemon`, and
+`test_exception_fences` link only that noninstalled static variant; normal
+binaries and package consumers link only the production target. No executable
+links both variants. The codec count observer and arithmetic probe exist only
+under the private test-runtime macro.
 
 After changing a private lifecycle seam, manually inspect the production
 archive from both testing-on and testing-off builds with `ar -t`, demangled
@@ -106,10 +113,13 @@ limitation, never as a successful sanitizer result.
 ## Manual frame/codec fuzzing
 
 `photospider_daemon_frame_codec_fuzz` is a long-lived manual libFuzzer target.
-It exercises bounded request/protocol-error decoding and the real stream-frame
-reader. It is `EXCLUDE_FROM_ALL`, is never registered with CTest, and requires
-Clang. It may be combined with the daemon ASAN mode when that platform's
-sanitizer runtime supports the combination:
+It exercises bounded request/protocol-error decoding, `job.result` and
+`daemon.info` response decoding, and the real stream-frame reader. The
+response paths include named Values, Value rank/facets, backend maps, fallback
+reasons, operation timings, and daemon method counts. It is
+`EXCLUDE_FROM_ALL`, is never registered with CTest, and requires Clang. It may
+be combined with the daemon ASAN mode when that platform's sanitizer runtime
+supports the combination:
 
 ```bash
 cmake -S . -B <fuzz-build> -DCMAKE_CXX_COMPILER=clang++ \
@@ -122,9 +132,11 @@ cp -R tests/fuzz/corpus/frame_codec/. "$ps_daemon_fuzz_corpus"/
   "$ps_daemon_fuzz_corpus" -runs=1000 -max_len=4096
 ```
 
-The maintained seed corpus is `tests/fuzz/corpus/frame_codec/`. Caller-selected
-crash and artifact directories remain untracked. Fuzzing supplements, but does
-not replace, the deterministic malformed real-socket regression cases. Use a
+The maintained seed corpus is `tests/fuzz/corpus/frame_codec/`. Its `hex:`
+seeds materialize directed `job.result` and `daemon.info` count payloads while
+ordinary and mutated inputs remain raw fuzz bytes. Caller-selected crash and
+artifact directories remain untracked. Fuzzing supplements, but does not
+replace, the deterministic malformed real-socket regression cases. Use a
 Clang distribution that actually ships its libFuzzer runtime; the temporary
 working corpus keeps generated mutations out of maintained seeds.
 

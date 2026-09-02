@@ -1,9 +1,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -14,6 +17,366 @@
 #include "support/test_support.hpp"
 
 namespace {
+
+using ps::ipc::internal::codec_test::DecoderCountKind;
+
+/** @brief Number of closed decoder count-boundary categories. */
+constexpr std::size_t kDecoderCountKindCount = 11U;
+
+/** @brief Synchronous observations made by the test-runtime codec seam. */
+std::array<std::uint64_t, kDecoderCountKindCount> g_count_observations{};
+
+/**
+ * @brief Records one count that passed all byte fences before allocation.
+ * @param kind Exact allocation-capable collection boundary.
+ * @param count Validated count; retained only as an observation occurrence.
+ * @throws Nothing.
+ * @note Tests run serially and clear the array before each independent probe.
+ */
+void observe_decoder_count(DecoderCountKind kind,
+                           std::uint64_t count) noexcept {
+  const auto index = static_cast<std::size_t>(kind);
+  if (index < g_count_observations.size()) {
+    g_count_observations[index] += count == 0U ? 1U : count;
+  }
+}
+
+/**
+ * @brief Clears every decoder count observation.
+ * @throws Nothing.
+ * @note The process-global observer remains installed.
+ */
+void clear_decoder_count_observations() noexcept {
+  g_count_observations.fill(0U);
+}
+
+/**
+ * @brief Returns whether one boundary was reached after its byte fence.
+ * @param kind Exact collection boundary to inspect.
+ * @return True when the installed observer saw at least one count.
+ * @throws Nothing.
+ */
+bool observed_decoder_count(DecoderCountKind kind) noexcept {
+  return g_count_observations[static_cast<std::size_t>(kind)] != 0U;
+}
+
+/**
+ * @brief Appends one little-endian unsigned integer to a wire fixture.
+ * @tparam UInt Unsigned integer type encoded byte-for-byte.
+ * @param payload Nonnull destination bytes.
+ * @param value Exact value to append.
+ * @throws std::bad_alloc If fixture growth fails.
+ * @note The helper is host-endian independent.
+ */
+template <typename UInt>
+void append_unsigned(std::vector<std::uint8_t>* payload, UInt value) {
+  static_assert(std::is_unsigned_v<UInt>);
+  for (std::size_t index = 0U; index < sizeof(UInt); ++index) {
+    payload->push_back(static_cast<std::uint8_t>((value >> (index * 8U)) &
+                                                 static_cast<UInt>(0xffU)));
+  }
+}
+
+/**
+ * @brief Builds a complete version-three request header.
+ * @param method Exact request method.
+ * @return Header with nonzero request id one.
+ * @throws std::bad_alloc If fixture growth fails.
+ */
+std::vector<std::uint8_t> request_header(ps::ipc::internal::Method method) {
+  std::vector<std::uint8_t> payload;
+  append_unsigned(&payload, std::uint16_t{3U});
+  append_unsigned(&payload, std::uint64_t{1U});
+  append_unsigned(&payload, static_cast<std::uint8_t>(method));
+  return payload;
+}
+
+/**
+ * @brief Builds a successful version-three response header.
+ * @param method Exact response method.
+ * @return Header with request id one and canonical successful status.
+ * @throws std::bad_alloc If fixture growth fails.
+ */
+std::vector<std::uint8_t> response_header(ps::ipc::internal::Method method) {
+  auto payload = request_header(method);
+  append_unsigned(&payload, static_cast<std::uint8_t>(ps::ErrorCode::Ok));
+  append_unsigned(&payload, std::uint32_t{0U});
+  return payload;
+}
+
+/**
+ * @brief Appends an exact number of zero fixture bytes.
+ * @param payload Nonnull destination bytes.
+ * @param count Exact number of bytes.
+ * @throws std::bad_alloc If fixture growth fails.
+ */
+void append_zeros(std::vector<std::uint8_t>* payload, std::size_t count) {
+  payload->insert(payload->end(), count, std::uint8_t{0U});
+}
+
+/**
+ * @brief Appends uint32-length-framed fixture text without codec validation.
+ * @param payload Nonnull destination bytes.
+ * @param value Exact ASCII fixture text.
+ * @throws std::bad_alloc If fixture growth fails.
+ * @note Callers use only short ASCII strings with uint32-representable sizes.
+ */
+void append_text(std::vector<std::uint8_t>* payload, const std::string& value) {
+  append_unsigned(payload, static_cast<std::uint32_t>(value.size()));
+  payload->insert(payload->end(), value.begin(), value.end());
+}
+
+/**
+ * @brief Appends the 52-byte minimum execution-diagnostics structure.
+ * @param payload Nonnull destination bytes.
+ * @throws std::bad_alloc If fixture growth fails.
+ * @note Transfer diagnostics remain three fixed uint64 scalars, not a count.
+ */
+void append_minimum_diagnostics(std::vector<std::uint8_t>* payload) {
+  append_unsigned(payload, std::uint64_t{0U});
+  append_unsigned(payload, std::uint32_t{0U});
+  append_zeros(payload, 3U * sizeof(std::uint64_t));
+  append_unsigned(payload, std::uint32_t{0U});
+  append_unsigned(payload, std::uint32_t{0U});
+  append_unsigned(payload, std::uint32_t{0U});
+  append_unsigned(payload, std::uint32_t{0U});
+}
+
+/**
+ * @brief Expected production arithmetic for one decoded count category.
+ * @note `semantic_maximum` is enforced by the actual call site before the
+ * shared remaining-byte predicate.
+ */
+struct CountContractExpectation final {
+  /** @brief Exact count-controlled decoder boundary. */
+  DecoderCountKind kind;
+  /** @brief Inclusive semantic wire maximum. */
+  std::uint64_t semantic_maximum;
+  /** @brief Minimum structural bytes for one entry. */
+  std::size_t minimum_entry_bytes;
+  /** @brief Fixed bytes that must remain after the collection. */
+  std::size_t required_suffix_bytes;
+};
+
+/** @brief Complete expected decoder count-contract inventory. */
+constexpr CountContractExpectation kCountContractExpectations[] = {
+    {DecoderCountKind::WorkflowNodes, 65536U, 20U, 4U},
+    {DecoderCountKind::WorkflowInputs, 1024U, 12U, 8U},
+    {DecoderCountKind::WorkflowParameters, 1024U, 6U, 4U},
+    {DecoderCountKind::WorkflowOutputs, 4096U, 16U, 0U},
+    {DecoderCountKind::ValueAxes, 8U, 32U, 65U},
+    {DecoderCountKind::ValueFacets, 64U, 12U, 56U},
+    {DecoderCountKind::DiagnosticBackends, 65536U, 9U, 40U},
+    {DecoderCountKind::DiagnosticFallbackReasons, 65536U, 4U, 12U},
+    {DecoderCountKind::DiagnosticOperationTimings, 131072U, 18U, 8U},
+    {DecoderCountKind::ResultNamedValues, 4096U, 54U, 52U},
+    {DecoderCountKind::DaemonMethods, 16U, 4U, 24U},
+};
+static_assert(std::size(kCountContractExpectations) == kDecoderCountKindCount);
+
+/**
+ * @brief One handcrafted payload that targets a decoded count boundary.
+ * @note `response` selects the matching complete public decoder entry point.
+ */
+struct WireCountFixture final {
+  /** @brief Complete request or response payload bytes. */
+  std::vector<std::uint8_t> payload;
+  /** @brief Expected request/response method. */
+  ps::ipc::internal::Method method = ps::ipc::internal::Method::SessionCreate;
+  /** @brief True for response payloads and false for requests. */
+  bool response = false;
+};
+
+/**
+ * @brief Builds one actual wire path ending at a selected count field.
+ * @param kind Exact count-controlled decoder boundary.
+ * @param count Candidate count to encode.
+ * @param entry_bytes Bytes supplied for entries after that count.
+ * @return Complete or deliberately malformed payload with every fixed suffix.
+ * @throws std::bad_alloc If fixture growth fails.
+ * @note Zero entry bytes model an impossible maximum count; minimum and
+ * one-byte-short sizes exercise the precise structural boundary.
+ */
+WireCountFixture make_wire_count_fixture(DecoderCountKind kind,
+                                         std::uint64_t count,
+                                         std::size_t entry_bytes) {
+  using ps::ElementType;
+  using ps::ipc::internal::Method;
+
+  WireCountFixture fixture;
+  switch (kind) {
+    case DecoderCountKind::WorkflowNodes:
+      fixture.method = Method::SessionCreate;
+      fixture.payload = request_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_unsigned(&fixture.payload, static_cast<std::uint32_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      break;
+    case DecoderCountKind::WorkflowInputs:
+      fixture.method = Method::SessionCreate;
+      fixture.payload = request_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_unsigned(&fixture.payload, std::uint64_t{1U});
+      append_text(&fixture.payload, "");
+      append_unsigned(&fixture.payload, static_cast<std::uint32_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      break;
+    case DecoderCountKind::WorkflowParameters:
+      fixture.method = Method::SessionCreate;
+      fixture.payload = request_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_unsigned(&fixture.payload, std::uint64_t{1U});
+      append_text(&fixture.payload, "");
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, static_cast<std::uint32_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      break;
+    case DecoderCountKind::WorkflowOutputs:
+      fixture.method = Method::SessionCreate;
+      fixture.payload = request_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, static_cast<std::uint32_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      break;
+    case DecoderCountKind::ValueAxes:
+      fixture.response = true;
+      fixture.method = Method::JobResult;
+      fixture.payload = response_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_text(&fixture.payload, "");
+      append_unsigned(&fixture.payload,
+                      static_cast<std::uint32_t>(ElementType::UInt8));
+      append_unsigned(&fixture.payload, static_cast<std::uint8_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_zeros(&fixture.payload, 8U);
+      append_unsigned(&fixture.payload, std::uint8_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_minimum_diagnostics(&fixture.payload);
+      break;
+    case DecoderCountKind::ValueFacets:
+      fixture.response = true;
+      fixture.method = Method::JobResult;
+      fixture.payload = response_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_text(&fixture.payload, "");
+      append_unsigned(&fixture.payload,
+                      static_cast<std::uint32_t>(ElementType::UInt8));
+      append_unsigned(&fixture.payload, std::uint8_t{1U});
+      append_unsigned(&fixture.payload, std::uint64_t{1U});
+      append_unsigned(&fixture.payload, std::uint64_t{0U});
+      append_unsigned(&fixture.payload, std::uint64_t{1U});
+      append_unsigned(&fixture.payload, std::uint64_t{0U});
+      append_unsigned(&fixture.payload, std::uint64_t{1U});
+      append_unsigned(&fixture.payload, static_cast<std::uint8_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_minimum_diagnostics(&fixture.payload);
+      break;
+    case DecoderCountKind::DiagnosticBackends:
+      fixture.response = true;
+      fixture.method = Method::JobResult;
+      fixture.payload = response_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint64_t{0U});
+      append_unsigned(&fixture.payload, static_cast<std::uint32_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_zeros(&fixture.payload, 3U * sizeof(std::uint64_t));
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      break;
+    case DecoderCountKind::DiagnosticFallbackReasons:
+      fixture.response = true;
+      fixture.method = Method::JobResult;
+      fixture.payload = response_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint64_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_zeros(&fixture.payload, 3U * sizeof(std::uint64_t));
+      append_unsigned(&fixture.payload, static_cast<std::uint32_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      break;
+    case DecoderCountKind::DiagnosticOperationTimings:
+      fixture.response = true;
+      fixture.method = Method::JobResult;
+      fixture.payload = response_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint64_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_zeros(&fixture.payload, 3U * sizeof(std::uint64_t));
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, static_cast<std::uint32_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{0U});
+      break;
+    case DecoderCountKind::ResultNamedValues:
+      fixture.response = true;
+      fixture.method = Method::JobResult;
+      fixture.payload = response_header(fixture.method);
+      append_unsigned(&fixture.payload, static_cast<std::uint32_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_minimum_diagnostics(&fixture.payload);
+      break;
+    case DecoderCountKind::DaemonMethods:
+      fixture.response = true;
+      fixture.method = Method::DaemonInfo;
+      fixture.payload = response_header(fixture.method);
+      append_unsigned(&fixture.payload, std::uint16_t{3U});
+      append_unsigned(&fixture.payload, std::uint64_t{1U});
+      append_text(&fixture.payload, "test");
+      append_text(&fixture.payload, "unix-domain");
+      append_unsigned(&fixture.payload, static_cast<std::uint8_t>(count));
+      append_zeros(&fixture.payload, entry_bytes);
+      append_unsigned(&fixture.payload, std::uint64_t{0U});
+      append_unsigned(&fixture.payload, std::uint64_t{0U});
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      append_unsigned(&fixture.payload, std::uint32_t{1U});
+      break;
+  }
+  return fixture;
+}
+
+/**
+ * @brief Captures only the public outcome needed by count-fence tests.
+ * @note Successful malformed fixtures are independently detectable.
+ */
+struct WireDecodeObservation final {
+  /** @brief Whether the selected public decoder unexpectedly succeeded. */
+  bool ok = false;
+  /** @brief Stable failure category, or Ok for successful decoding. */
+  ps::ErrorCode code = ps::ErrorCode::Ok;
+};
+
+/**
+ * @brief Decodes one handcrafted request or response count fixture.
+ * @param fixture Complete selected-method fixture.
+ * @return Success bit and stable failure category.
+ * @throws std::bad_alloc Only if a genuinely admissible fixture allocation
+ * fails after its count fence.
+ */
+WireDecodeObservation decode_wire_count_fixture(
+    const WireCountFixture& fixture) {
+  if (fixture.response) {
+    auto result =
+        ps::ipc::internal::decode_response(fixture.payload, fixture.method, 1U);
+    return {result.ok(),
+            result.ok() ? ps::ErrorCode::Ok : result.status().code};
+  }
+  auto result = ps::ipc::internal::decode_request(fixture.payload);
+  return {result.ok(), result.ok() ? ps::ErrorCode::Ok : result.status().code};
+}
 
 /**
  * @brief Builds one complete public compiler source for codec round trips.
@@ -285,6 +648,9 @@ int main() {
   using ps::ipc::internal::Response;
   using ps::ipc::internal::write_frame;
 
+  ps::ipc::internal::codec_test::install_decoder_count_observer(
+      &observe_decoder_count);
+
   Request request;
   request.request_id = 7U;
   request.method = Method::SessionCreate;
@@ -296,6 +662,50 @@ int main() {
   PS_IPC_CHECK(decoded.value().request_id == 7U);
   PS_IPC_CHECK(decoded.value().document.nodes.size() == 2U);
   PS_IPC_CHECK(decoded.value().document.outputs.front().name == "value");
+
+  for (const auto& contract : kCountContractExpectations) {
+    PS_IPC_CHECK(!ps::ipc::internal::codec_test::decoder_count_fits(
+        contract.kind, contract.semantic_maximum, 0U));
+    PS_IPC_CHECK(!ps::ipc::internal::codec_test::decoder_count_fits(
+        contract.kind, 1U,
+        contract.minimum_entry_bytes + contract.required_suffix_bytes - 1U));
+    PS_IPC_CHECK(ps::ipc::internal::codec_test::decoder_count_fits(
+        contract.kind, 1U,
+        contract.minimum_entry_bytes + contract.required_suffix_bytes));
+
+    clear_decoder_count_observations();
+    auto impossible_maximum =
+        make_wire_count_fixture(contract.kind, contract.semantic_maximum, 0U);
+    const auto impossible_maximum_result =
+        decode_wire_count_fixture(impossible_maximum);
+    PS_IPC_CHECK(!impossible_maximum_result.ok);
+    PS_IPC_CHECK(impossible_maximum_result.code == ErrorCode::InvalidArgument);
+    PS_IPC_CHECK(!observed_decoder_count(contract.kind));
+
+    clear_decoder_count_observations();
+    auto one_byte_short = make_wire_count_fixture(
+        contract.kind, 1U, contract.minimum_entry_bytes - 1U);
+    const auto one_byte_short_result =
+        decode_wire_count_fixture(one_byte_short);
+    PS_IPC_CHECK(!one_byte_short_result.ok);
+    PS_IPC_CHECK(one_byte_short_result.code == ErrorCode::InvalidArgument);
+    PS_IPC_CHECK(!observed_decoder_count(contract.kind));
+
+    clear_decoder_count_observations();
+    auto one_minimum_entry = make_wire_count_fixture(
+        contract.kind, 1U, contract.minimum_entry_bytes);
+    static_cast<void>(decode_wire_count_fixture(one_minimum_entry));
+    PS_IPC_CHECK(observed_decoder_count(contract.kind));
+
+    clear_decoder_count_observations();
+    auto semantic_overflow = make_wire_count_fixture(
+        contract.kind, contract.semantic_maximum + 1U, 0U);
+    const auto semantic_overflow_result =
+        decode_wire_count_fixture(semantic_overflow);
+    PS_IPC_CHECK(!semantic_overflow_result.ok);
+    PS_IPC_CHECK(semantic_overflow_result.code == ErrorCode::InvalidArgument);
+    PS_IPC_CHECK(!observed_decoder_count(contract.kind));
+  }
 
   const Status malformed_status =
       Status::failure(ErrorCode::InvalidArgument, "malformed request fixture");
@@ -466,5 +876,6 @@ int main() {
   PS_IPC_CHECK(!wrong_method.result_ok);
   PS_IPC_CHECK(wrong_method.status_code == ErrorCode::InvalidArgument);
   PS_IPC_CHECK(!wrong_method.connected_after_call);
+  ps::ipc::internal::codec_test::install_decoder_count_observer(nullptr);
   return 0;
 }
