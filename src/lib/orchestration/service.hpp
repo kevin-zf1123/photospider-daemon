@@ -92,9 +92,11 @@ class Service final {
    * `shutdown_after_write`. A failed pre-commit dispatch leaves admission
    * open. If diagnostic construction also fails, the response retains its
    * correlation, carries a non-Ok empty-message status, and contains no
-   * success-only payload. Session close publishes an internal closing state
-   * before releasing global lifecycle serialization and waiting only for its
-   * own popped Jobs; unrelated Session create/submit/close can continue.
+   * success-only payload. A standard exception's borrowed diagnostic may be
+   * null; dispatch normalizes it to an empty message inside the protected
+   * catch-status construction. Session close publishes an internal closing
+   * state before releasing global lifecycle serialization and waiting only for
+   * its own popped Jobs; unrelated Session create/submit/close can continue.
    * Session create similarly reserves capacity under a short lifecycle/Session
    * critical section, constructs and compiles outside both locks, and
    * publishes only a complete record. Pending creates count for admission but

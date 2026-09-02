@@ -308,6 +308,12 @@ same-uid writer racing exactly between them.
   publication. Pre-mutation snapshot failure reopens the Session; successful
   settlement erases it with a fresh-id-only capacity reuse path.
 - Job state is monotonic and cancellation cannot publish success afterward.
+- Service dispatch exceptions preserve request correlation, clear every
+  success-only payload and `shutdown_after_write`, and produce one typed
+  failure. A standard exception diagnostic is a nullable borrowed pointer;
+  null becomes an empty message inside the protected failure-Status
+  construction, while secondary construction failure retains the existing
+  allocation-free fallback.
 - Worker/callback exceptions are fenced into one Job failure. The worker catch
   boundary passes only a nullable diagnostic pointer; null becomes an empty
   message, and secondary construction failure preserves cancellation or the

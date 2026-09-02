@@ -267,6 +267,10 @@ credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。P
   result publication。Pre-mutation snapshot failure 会重新打开 Session；成功 settle 后
   erase，并只通过 fresh id 复用 capacity。
 - Job state 单调，cancellation 后不能发布 success。
+- Service dispatch exception 会保留 request correlation、清空所有 success-only payload
+  与 `shutdown_after_write`，并产生一个 typed failure。Standard exception 的 diagnostic
+  是 nullable borrowed pointer；null 会在受保护的 failure-Status construction 内规范化
+  为空 message，secondary construction failure 则保留既有 allocation-free fallback。
 - Worker/callback exception 被 fenced 到一个 Job failure。Worker catch boundary 只传递
   nullable diagnostic pointer；null 规范化为空 message，secondary construction failure
   仍会保留 cancellation 或 primary error category，并发布 terminal state 与 cleanup。
