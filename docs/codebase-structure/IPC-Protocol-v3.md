@@ -161,14 +161,18 @@ full registry returns `ResourceExhausted` and creates nothing.
 
 ### `session.close`
 
-The request contains a `SessionId`. Close atomically wins against new submit.
-Under the global registry lock it removes matching records still present in the
-worker queue, then synchronously completes their existing
+The request contains a `SessionId`. Close atomically marks an open record as
+closing against new submit. Submit and repeated close then return `NotFound`,
+while the retained record continues consuming Session capacity. The
+process-wide lifecycle lock is released before the Job registry removes
+matching queue-owned records and synchronously completes their existing
 `Queued -> Running -> Cancelled` transitions. Matching records already popped
 by a worker retain cooperative cancellation, stale-publication fences, and a
-terminal wait. No unrelated Session Job participates in that wait. Close then
-removes the Session/kernel context and releases capacity; a later close returns
-`NotFound`.
+terminal wait. No unrelated Session Job participates in that wait, and
+unrelated Session create, submit, and close remain responsive. A snapshot
+allocation failure precedes every Job mutation and clears closing so the caller
+may retry. After successful settlement, close reacquires lifecycle ownership,
+removes the Session/kernel context, and releases capacity.
 
 ## Jobs
 
@@ -286,8 +290,11 @@ same-uid writer racing exactly between them.
 - Frame, version, enum, UTF-8, count, length, overflow, and trailing-data
   validation occurs before state mutation.
 - Session creation compiles before registry publication.
-- Session close is atomic against submit, removes queued ownership exactly,
-  waits only for its own popped work, and rejects later result publication.
+- Session close is atomic against submit, retains capacity while marked
+  closing, releases global lifecycle serialization before waiting only for its
+  own popped work, removes queued ownership exactly, and rejects later result
+  publication. Pre-mutation snapshot failure reopens the Session; successful
+  settlement erases it with a fresh-id-only capacity reuse path.
 - Job state is monotonic and cancellation cannot publish success afterward.
 - Worker/callback exceptions are fenced into one Job failure.
 - Descriptor, worker, GraphContext, result, and queue ownership settles exactly

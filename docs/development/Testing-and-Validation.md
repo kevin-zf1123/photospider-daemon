@@ -34,6 +34,14 @@ never a sibling source target or private kernel include path.
   without state mutation or declared-length allocation.
 - Session tests cover positive `maximum_sessions`, no-allocation/no-id
   backpressure, close/reuse, exact cleanup, and concurrent admission. A
+  noninstalled post-Running gate holds Session A before its non-preemptible
+  compiler boundary while close A waits. With A still retained as closing, a
+  second worker and independent real-socket handlers prove Session B can
+  create, submit, succeed, and close within explicit deadlines; A submit and
+  repeated close return `NotFound`; capacity is not released early and is
+  reused with a fresh id after A settles; no Job/result/handler remains. A
+  separate pre-mutation snapshot `bad_alloc` proves closing rolls back and the
+  same Session can submit and close on retry. A
   single-worker regression holds Session A Running while Session B remains
   Queued, then proves closing B completes within a short deadline, leaves A
   Running, removes B's Job, and immediately reuses Session capacity. Its

@@ -24,7 +24,12 @@ Queued -> Running -> Succeeded | Failed | Cancelled
 `session.close` removes matching work still owned by the global queue and
 completes its existing state transitions locally. It cooperatively cancels and
 waits only for matching work already popped by a worker; an unrelated
-Session's Running Job never delays close or Session-capacity reuse.
+Session's Running Job never participates. Once close wins, the Session remains
+internally retained as closing: its submit and repeated close return
+`NotFound`, it still consumes capacity, and the process-wide lifecycle lock is
+released before its popped Jobs are awaited. Unrelated Session create, submit,
+and close therefore continue; the closing Session releases capacity only after
+its own work settles and the record is erased.
 
 Restart clears every Session, Job, and result. There is no automatic retry,
 attempt identity, checkpoint, recovery, durable result, receipt, tenant, or

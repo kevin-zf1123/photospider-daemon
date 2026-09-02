@@ -46,6 +46,8 @@ struct ServiceConfig final {
  *
  * @note Construction starts empty; destruction cancels unfinished work, joins
  * worker loops, and releases every namespace/result. Nothing is persisted.
+ * Object lifetime must cover every concurrent `dispatch`; Server joins all
+ * handlers before Service destruction.
  */
 class Service final {
  public:
@@ -90,7 +92,9 @@ class Service final {
    * `shutdown_after_write`. A failed pre-commit dispatch leaves admission
    * open. If diagnostic construction also fails, the response retains its
    * correlation, carries a non-Ok empty-message status, and contains no
-   * success-only payload.
+   * success-only payload. Session close publishes an internal closing state
+   * before releasing global lifecycle serialization and waiting only for its
+   * own popped Jobs; unrelated Session create/submit/close can continue.
    */
   [[nodiscard]] Response dispatch(const Request& request) noexcept;
 

@@ -23,7 +23,11 @@ Queued -> Running -> Succeeded | Failed | Cancelled
 
 `session.close` 会移除仍由 global queue 拥有的 matching work，并在本地完成其既有状态
 迁移。它只会 cooperative cancel 并等待已被 worker pop 的 matching work；无关
-Session 的 Running Job 绝不会延迟 close 或 Session capacity 复用。
+Session 的 Running Job 绝不参与。Close 胜出后，Session 会以 closing 状态保留在内部：
+其 submit 与 repeated close 返回 `NotFound`，它继续占用 capacity，而 process-wide
+lifecycle lock 会在等待其 popped Job 前释放。因此无关 Session 的 create、submit 与
+close 可以继续；closing Session 只会在自身 work settle 且 record 被 erase 后释放
+capacity。
 
 Restart 清空全部 Session、Job 与 result。不存在自动 retry、attempt identity、
 checkpoint、recovery、durable result、receipt、tenant 或 remote service。

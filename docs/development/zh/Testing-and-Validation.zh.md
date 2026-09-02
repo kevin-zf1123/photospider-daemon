@@ -27,7 +27,13 @@ sibling source target 或 private kernel include path。
   correlation；incomplete header 只使用 sentinel。Server 返回一个 typed failure 后关闭，
   且不产生 state mutation 或 declared-length allocation。
 - Session test 覆盖正值 `maximum_sessions`、无 allocation/无 id 的 backpressure、
-  close/reuse、精确 cleanup 与 concurrent admission。单 worker regression 会让
+  close/reuse、精确 cleanup 与 concurrent admission。Noninstalled post-Running gate 会在
+  Session A 的 non-preemptible compiler boundary 前将其 hold，同时 close A 等待。A 仍以
+  closing 状态保留时，第二个 worker 与独立 real-socket handler 会证明 Session B 可在显式
+  deadline 内 create、submit、succeed 并 close；A 的 submit/repeated close 返回
+  `NotFound`；capacity 不会提前释放，并在 A settle 后通过 fresh id 复用；不会遗留
+  Job/result/handler。另一项 pre-mutation snapshot `bad_alloc` 回归证明 closing 会 rollback，
+  同一个 Session 可重新 submit 并 close。单 worker regression 会让
   Session A 保持 Running、Session B 保持 Queued，随后证明关闭 B 在短 deadline 内完成、
   A 仍为 Running、B 的 Job 被移除，且 Session capacity 可立即复用。其 timeout path
   会先取消 A，再回收 close future，使失败快速清理；后续 daemon shutdown 不会保留一个

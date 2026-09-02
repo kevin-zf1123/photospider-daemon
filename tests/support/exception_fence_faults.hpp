@@ -15,6 +15,10 @@ using ShutdownResponseReadyObserver = void (*)(bool accepted_shutdown);
 using ShutdownResponseWriteObserver = void (*)(bool accepted_shutdown,
                                                const Status& status);
 
+/** @brief Test-only observer after a Job publishes Running before compilation.
+ */
+using JobRunningObserver = void (*)();
+
 /** @brief Deterministic exception-fence points in the test-only runtime. */
 enum class ExceptionFenceFaultPoint : std::uint32_t {
   /** @brief Throws after one Service method has produced its response. */
@@ -33,6 +37,8 @@ enum class ExceptionFenceFaultPoint : std::uint32_t {
   ProtocolFailureEncode,
   /** @brief Throws after encoding and before a failure frame is written. */
   ProtocolFailureWrite,
+  /** @brief Throws before Session-close snapshot allocation or mutation. */
+  SessionCloseSnapshot,
   /** @brief One-past-the-end value used only to size fixed test state. */
   Count,
 };
@@ -77,6 +83,22 @@ void arm_exception_fence_fault(ExceptionFenceFaultPoint point,
 void install_shutdown_response_observers(
     ShutdownResponseReadyObserver ready,
     ShutdownResponseWriteObserver write) noexcept;
+
+/**
+ * @brief Installs or clears the deterministic Job-Running observer.
+ * @param observer Callback after Running publication, or null to clear.
+ * @throws Nothing.
+ * @note Install before submit and clear only after the observed worker exits
+ * its callback. This seam exists only in the noninstalled test runtime.
+ */
+void install_job_running_observer(JobRunningObserver observer) noexcept;
+
+/**
+ * @brief Invokes the installed post-Running test observer.
+ * @throws Nothing; every observer exception is fenced.
+ * @note Production orchestration objects contain no corresponding callback.
+ */
+void observe_job_running() noexcept;
 
 /**
  * @brief Invokes the installed post-dispatch response observer.
