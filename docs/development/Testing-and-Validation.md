@@ -18,12 +18,15 @@ never a sibling source target or private kernel include path.
 - Binary codec tests cover exact enums, ranges, UTF-8, duplicate fields,
   trailing bytes, request correlation, and the protocol-error sentinel. A
   one-shot fake Unix server proves the public Client returns a completely read
-  sentinel's typed status and resets its descriptor. A table-driven boundary
-  matrix covers parameters, nodes, inputs, outputs, Value axes/facets,
-  backend maps, named Values, fallback reasons, operation timings, and daemon
-  methods with maximum-count/empty, one-byte-short, one-minimum-entry, and
-  semantic-maximum-plus-one cases. A noninstalled count observer proves the
-  malformed node and timing cases reject before their large reserve points.
+  sentinel's typed status and resets its descriptor, preserves a complete
+  ordinary business `NotFound`, and maps clean EOF after a fully decoded
+  request but before any response to disconnected `Internal` with unknown
+  request outcome. A table-driven boundary matrix covers parameters, nodes,
+  inputs, outputs, Value axes/facets, backend maps, named Values, fallback
+  reasons, operation timings, and daemon methods with maximum-count/empty,
+  one-byte-short, one-minimum-entry, and semantic-maximum-plus-one cases. A
+  noninstalled count observer proves the malformed node and timing cases reject
+  before their large reserve points.
 - Real Unix-socket tests cover oversized `0xffffffff`, truncated, duplicate,
   unknown-enum, invalid-UTF-8, and trailing-byte requests. A complete eleven-
   byte header followed by body EOF preserves correlation; an incomplete header

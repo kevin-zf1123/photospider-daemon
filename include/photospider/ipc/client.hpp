@@ -14,7 +14,9 @@ namespace ps::ipc {
  * permits at most one outstanding call and performs no automatic retry. A
  * completely received failed sentinel (`request_id=0`, `daemon.info`) returns
  * its typed status and disconnects; a sentinel lost to transport failure
- * cannot replace the observed transport status.
+ * cannot replace the observed transport status. Clean EOF after a complete
+ * request but before any response is `Internal`, disconnects, and means the
+ * request outcome is unknown; it is never reported as business `NotFound`.
  */
 class Client final {
  public:

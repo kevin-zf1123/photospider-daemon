@@ -22,7 +22,9 @@ struct Client::Impl final {
    * @note The mutex covers the entire request/response exchange so correlation
    * state and stream framing cannot interleave. A completely decoded failed
    * sentinel returns its typed status and resets the descriptor; ordinary
-   * responses still require exact method/id correlation.
+   * responses still require exact method/id correlation. Clean response EOF
+   * resets the descriptor and becomes `Internal` because the fully written
+   * request may already have produced effects and its outcome is unknown.
    */
   Result<internal::Response> call(internal::Request request) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -48,7 +50,14 @@ struct Client::Impl final {
     }
     auto frame = internal::read_frame(descriptor.get());
     if (!frame.ok()) {
+      const bool peer_closed_before_response =
+          frame.status().code == ErrorCode::NotFound;
       descriptor.reset();
+      if (peer_closed_before_response) {
+        return Result<internal::Response>(Status::failure(
+            ErrorCode::Internal,
+            "local peer closed before a response; request outcome is unknown"));
+      }
       return Result<internal::Response>(frame.status());
     }
     auto response = internal::decode_response(frame.value(), request.method,
