@@ -1,6 +1,9 @@
 #include "ipc/codec.hpp"
 
 #include <algorithm>
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+#include <atomic>
+#endif
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -10,6 +13,28 @@
 
 namespace ps::ipc::internal {
 namespace {
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/** @brief Process-global observer used only by the noninstalled test runtime.
+ */
+std::atomic<codec_test::DecoderCountObserver> g_decoder_count_observer{nullptr};
+
+/**
+ * @brief Publishes one successfully fenced count to the test observer.
+ * @param kind Exact allocation-capable collection boundary.
+ * @param count Validated count about to control allocation or iteration.
+ * @throws Nothing.
+ * @note Production compilation removes this helper and every call site.
+ */
+void observe_decoder_count(codec_test::DecoderCountKind kind,
+                           std::uint64_t count) noexcept {
+  const auto observer =
+      g_decoder_count_observer.load(std::memory_order_acquire);
+  if (observer != nullptr) {
+    observer(kind, count);
+  }
+}
+#endif
 
 /**
  * @brief Internal typed exception used to unwind malformed codec state.
@@ -253,6 +278,100 @@ class Encoder final {
 };
 
 /**
+ * @brief Minimum encoded bytes required by one count-controlled collection.
+ *
+ * `minimum_entry_bytes` is the smallest legal structural representation of
+ * one entry, excluding semantic validation. `required_suffix_bytes` is the
+ * smallest fixed wire suffix that must remain after the complete collection.
+ *
+ * @note Contracts intentionally exclude variable payload bytes so valid
+ * frames are never rejected by a conservative overestimate.
+ */
+struct CountContract final {
+  /** @brief Smallest encoded bytes consumed by one collection entry. */
+  std::size_t minimum_entry_bytes;
+  /** @brief Smallest fixed structural suffix following the collection. */
+  std::size_t required_suffix_bytes;
+};
+
+/** @brief Workflow nodes plus the final output-count field. */
+constexpr CountContract kWorkflowNodesContract{20U, 4U};
+/** @brief Node inputs plus parameter and final output count fields. */
+constexpr CountContract kWorkflowInputsContract{12U, 8U};
+/** @brief Boolean-minimum parameters plus the final output-count field. */
+constexpr CountContract kWorkflowParametersContract{6U, 4U};
+/** @brief Named workflow outputs with no fixed trailing document bytes. */
+constexpr CountContract kWorkflowOutputsContract{16U, 0U};
+/** @brief Value axes plus Value fixed fields and minimum diagnostics. */
+constexpr CountContract kValueAxesContract{32U, 65U};
+/** @brief Value facets plus Value bytes and minimum diagnostics. */
+constexpr CountContract kValueFacetsContract{12U, 56U};
+/** @brief Backend map entries plus fixed remaining diagnostic fields. */
+constexpr CountContract kDiagnosticBackendsContract{9U, 40U};
+/** @brief Fallback text prefixes plus timing/digest count fields. */
+constexpr CountContract kDiagnosticReasonsContract{4U, 12U};
+/** @brief Operation timings plus both following digest length fields. */
+constexpr CountContract kDiagnosticTimingsContract{18U, 8U};
+/** @brief Named minimum-rank Values plus minimum diagnostics. */
+constexpr CountContract kResultValuesContract{54U, 52U};
+/** @brief Method text prefixes plus fixed daemon-capacity fields. */
+constexpr CountContract kDaemonMethodsContract{4U, 24U};
+
+/**
+ * @brief Evaluates one structural count contract without overflow.
+ * @param count Candidate entry count.
+ * @param remaining_bytes Exact unread bytes following the count field.
+ * @param contract Minimum per-entry and fixed-suffix wire bytes.
+ * @return True exactly when the encoded collection can structurally fit.
+ * @throws Nothing.
+ * @note Subtraction precedes division, and no count multiplication occurs.
+ */
+bool count_fits(std::uint64_t count, std::size_t remaining_bytes,
+                CountContract contract) noexcept {
+  return contract.minimum_entry_bytes != 0U &&
+         contract.required_suffix_bytes <= remaining_bytes &&
+         count <= static_cast<std::uint64_t>(
+                      (remaining_bytes - contract.required_suffix_bytes) /
+                      contract.minimum_entry_bytes);
+}
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/**
+ * @brief Returns the production byte contract selected by one test-only kind.
+ * @param kind Exact count-controlled decoder boundary.
+ * @return Matching minimum-entry and required-suffix contract.
+ * @throws Nothing.
+ */
+CountContract count_contract(codec_test::DecoderCountKind kind) noexcept {
+  switch (kind) {
+    case codec_test::DecoderCountKind::WorkflowNodes:
+      return kWorkflowNodesContract;
+    case codec_test::DecoderCountKind::WorkflowInputs:
+      return kWorkflowInputsContract;
+    case codec_test::DecoderCountKind::WorkflowParameters:
+      return kWorkflowParametersContract;
+    case codec_test::DecoderCountKind::WorkflowOutputs:
+      return kWorkflowOutputsContract;
+    case codec_test::DecoderCountKind::ValueAxes:
+      return kValueAxesContract;
+    case codec_test::DecoderCountKind::ValueFacets:
+      return kValueFacetsContract;
+    case codec_test::DecoderCountKind::DiagnosticBackends:
+      return kDiagnosticBackendsContract;
+    case codec_test::DecoderCountKind::DiagnosticFallbackReasons:
+      return kDiagnosticReasonsContract;
+    case codec_test::DecoderCountKind::DiagnosticOperationTimings:
+      return kDiagnosticTimingsContract;
+    case codec_test::DecoderCountKind::ResultNamedValues:
+      return kResultValuesContract;
+    case codec_test::DecoderCountKind::DaemonMethods:
+      return kDaemonMethodsContract;
+  }
+  return CountContract{0U, 0U};
+}
+#endif
+
+/**
  * @brief Bounds-checking little-endian payload reader.
  *
  * @note Every read either advances exactly once or throws without publishing a
@@ -416,6 +535,39 @@ class Decoder final {
   }
 
   /**
+   * @brief Returns the exact unread payload byte count.
+   * @return Bytes from the current offset through the complete payload end.
+   * @throws Nothing.
+   * @note Decoder invariants keep `offset_` within `payload_`, so subtraction
+   * cannot underflow.
+   */
+  [[nodiscard]] std::size_t remaining() const noexcept {
+    return payload_.size() - offset_;
+  }
+
+  /**
+   * @brief Fences a wire count against unread minimum entry and suffix bytes.
+   * @param count Decoded collection count after its semantic maximum check.
+   * @param minimum_entry_bytes Smallest structural bytes for one entry;
+   * must be nonzero.
+   * @param required_suffix_bytes Smallest fixed bytes following the complete
+   * collection.
+   * @throws CodecFailure If the unread payload cannot structurally contain the
+   * requested entries and suffix.
+   * @note Subtraction and division avoid multiplication overflow. Call before
+   * every reserve, resize, insertion-capable loop, or count-controlled loop.
+   */
+  void require_count_fits(std::uint64_t count, std::size_t minimum_entry_bytes,
+                          std::size_t required_suffix_bytes) const {
+    if (!count_fits(
+            count, remaining(),
+            CountContract{minimum_entry_bytes, required_suffix_bytes})) {
+      throw CodecFailure(ErrorCode::InvalidArgument,
+                         "wire collection count exceeds remaining bytes");
+    }
+  }
+
+  /**
    * @brief Rejects any trailing method bytes.
    * @throws CodecFailure Unless every payload byte was consumed.
    * @note Call exactly once after the method-selected body is decoded.
@@ -435,7 +587,7 @@ class Decoder final {
    * @note The read offset is unchanged.
    */
   void require(std::size_t size) const {
-    if (size > payload_.size() - offset_) {
+    if (size > remaining()) {
       throw CodecFailure(ErrorCode::InvalidArgument,
                          "wire payload is truncated");
     }
@@ -679,7 +831,9 @@ void encode_document(Encoder* encoder, const WorkflowDocument& document) {
  * @return Fully owned public compiler source model.
  * @throws CodecFailure If counts, duplicates, text, or payload are malformed.
  * @throws std::bad_alloc If document allocation fails.
- * @note The caller compiles only after complete decoding succeeds.
+ * @note Every collection count is fenced against its minimum entries and
+ * required suffix before reserve, map insertion, or iteration. The caller
+ * compiles only after complete decoding succeeds.
  */
 WorkflowDocument decode_document(Decoder* decoder) {
   WorkflowDocument document;
@@ -689,6 +843,13 @@ WorkflowDocument decode_document(Decoder* decoder) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire workflow has too many nodes");
   }
+  decoder->require_count_fits(node_count,
+                              kWorkflowNodesContract.minimum_entry_bytes,
+                              kWorkflowNodesContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  observe_decoder_count(codec_test::DecoderCountKind::WorkflowNodes,
+                        node_count);
+#endif
   document.nodes.reserve(node_count);
   for (std::uint32_t index = 0U; index < node_count; ++index) {
     WorkflowNode node;
@@ -699,6 +860,13 @@ WorkflowDocument decode_document(Decoder* decoder) {
       throw CodecFailure(ErrorCode::InvalidArgument,
                          "wire workflow has too many inputs");
     }
+    decoder->require_count_fits(input_count,
+                                kWorkflowInputsContract.minimum_entry_bytes,
+                                kWorkflowInputsContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+    observe_decoder_count(codec_test::DecoderCountKind::WorkflowInputs,
+                          input_count);
+#endif
     node.inputs.reserve(input_count);
     for (std::uint32_t input = 0U; input < input_count; ++input) {
       node.inputs.push_back(WorkflowInput{decoder->u64(), decoder->text(64U)});
@@ -708,6 +876,13 @@ WorkflowDocument decode_document(Decoder* decoder) {
       throw CodecFailure(ErrorCode::InvalidArgument,
                          "wire workflow has too many parameters");
     }
+    decoder->require_count_fits(
+        parameter_count, kWorkflowParametersContract.minimum_entry_bytes,
+        kWorkflowParametersContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+    observe_decoder_count(codec_test::DecoderCountKind::WorkflowParameters,
+                          parameter_count);
+#endif
     for (std::uint32_t parameter = 0U; parameter < parameter_count;
          ++parameter) {
       std::string key = decoder->text(1024U);
@@ -723,6 +898,13 @@ WorkflowDocument decode_document(Decoder* decoder) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire workflow has too many outputs");
   }
+  decoder->require_count_fits(output_count,
+                              kWorkflowOutputsContract.minimum_entry_bytes,
+                              kWorkflowOutputsContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  observe_decoder_count(codec_test::DecoderCountKind::WorkflowOutputs,
+                        output_count);
+#endif
   document.outputs.reserve(output_count);
   for (std::uint32_t index = 0U; index < output_count; ++index) {
     document.outputs.push_back(WorkflowOutput{
@@ -776,7 +958,9 @@ void encode_value(Encoder* encoder, const Value& value) {
  * @return Fully validated immutable public Value.
  * @throws CodecFailure If type, shape, Region, layout, facets, or bytes fail.
  * @throws std::bad_alloc If Value construction allocation fails.
- * @note Publication occurs only through `Value::create` after complete decode.
+ * @note Rank and facet counts are fenced against remaining Value/result bytes
+ * before reserve. Publication occurs only through `Value::create` after
+ * complete decode.
  */
 Value decode_value(Decoder* decoder) {
   const std::uint32_t raw_type = decoder->u32();
@@ -790,6 +974,11 @@ Value decode_value(Decoder* decoder) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire Value rank is outside 1..8");
   }
+  decoder->require_count_fits(rank, kValueAxesContract.minimum_entry_bytes,
+                              kValueAxesContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  observe_decoder_count(codec_test::DecoderCountKind::ValueAxes, rank);
+#endif
   std::vector<std::uint64_t> shape;
   std::vector<RegionDimension> dimensions;
   std::vector<std::int64_t> strides;
@@ -811,6 +1000,12 @@ Value decode_value(Decoder* decoder) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire Value has too many facets");
   }
+  decoder->require_count_fits(facet_count,
+                              kValueFacetsContract.minimum_entry_bytes,
+                              kValueFacetsContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  observe_decoder_count(codec_test::DecoderCountKind::ValueFacets, facet_count);
+#endif
   std::vector<ValueFacet> facets;
   facets.reserve(facet_count);
   for (std::uint8_t index = 0U; index < facet_count; ++index) {
@@ -887,7 +1082,9 @@ void encode_diagnostics(Encoder* encoder,
  * @return Fully owned raw local timing/resource observations.
  * @throws CodecFailure If counts, duplicates, enums, text, or payload fail.
  * @throws std::bad_alloc If diagnostic storage allocation fails.
- * @note No performance verdict or release evidence is reconstructed.
+ * @note Backend, fallback-reason, and timing counts are fenced before
+ * insertion, reserve, or iteration. No performance verdict or release
+ * evidence is reconstructed.
  */
 ExecutionDiagnostics decode_diagnostics(Decoder* decoder) {
   ExecutionDiagnostics diagnostics;
@@ -897,6 +1094,13 @@ ExecutionDiagnostics decode_diagnostics(Decoder* decoder) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire diagnostics have too many backends");
   }
+  decoder->require_count_fits(
+      backend_count, kDiagnosticBackendsContract.minimum_entry_bytes,
+      kDiagnosticBackendsContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  observe_decoder_count(codec_test::DecoderCountKind::DiagnosticBackends,
+                        backend_count);
+#endif
   for (std::uint32_t index = 0U; index < backend_count; ++index) {
     const std::uint64_t node_id = decoder->u64();
     const std::uint8_t raw_backend = decoder->u8();
@@ -918,6 +1122,13 @@ ExecutionDiagnostics decode_diagnostics(Decoder* decoder) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire diagnostics have too many fallback reasons");
   }
+  decoder->require_count_fits(reason_count,
+                              kDiagnosticReasonsContract.minimum_entry_bytes,
+                              kDiagnosticReasonsContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  observe_decoder_count(codec_test::DecoderCountKind::DiagnosticFallbackReasons,
+                        reason_count);
+#endif
   diagnostics.fallback_reasons.reserve(reason_count);
   for (std::uint32_t index = 0U; index < reason_count; ++index) {
     diagnostics.fallback_reasons.push_back(decoder->text(4096U));
@@ -927,6 +1138,13 @@ ExecutionDiagnostics decode_diagnostics(Decoder* decoder) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire diagnostics have too many operation timings");
   }
+  decoder->require_count_fits(timing_count,
+                              kDiagnosticTimingsContract.minimum_entry_bytes,
+                              kDiagnosticTimingsContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  observe_decoder_count(
+      codec_test::DecoderCountKind::DiagnosticOperationTimings, timing_count);
+#endif
   diagnostics.operation_timings.reserve(timing_count);
   for (std::uint32_t index = 0U; index < timing_count; ++index) {
     OperationTiming timing;
@@ -980,7 +1198,9 @@ void encode_execution_result(Encoder* encoder, const ExecutionResult& result) {
  * @return Fully owned public kernel execution result.
  * @throws CodecFailure If counts, names, Values, or diagnostics fail.
  * @throws std::bad_alloc If result allocation fails.
- * @note Duplicate names reject the complete response without publication.
+ * @note The named-Value count is fenced against minimum Values and complete
+ * diagnostics before map insertion. Duplicate names reject the complete
+ * response without publication.
  */
 ExecutionResult decode_execution_result(Decoder* decoder) {
   ExecutionResult result;
@@ -989,6 +1209,13 @@ ExecutionResult decode_execution_result(Decoder* decoder) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "wire result has too many named Values");
   }
+  decoder->require_count_fits(value_count,
+                              kResultValuesContract.minimum_entry_bytes,
+                              kResultValuesContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  observe_decoder_count(codec_test::DecoderCountKind::ResultNamedValues,
+                        value_count);
+#endif
   for (std::uint32_t index = 0U; index < value_count; ++index) {
     std::string name = decoder->text(1024U);
     if (!result.values.emplace(name, decode_value(decoder)).second) {
@@ -1086,6 +1313,23 @@ RecoveredCorrelation recover_correlation(
 }
 
 }  // namespace
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+namespace codec_test {
+
+/** @copydoc install_decoder_count_observer */
+void install_decoder_count_observer(DecoderCountObserver observer) noexcept {
+  g_decoder_count_observer.store(observer, std::memory_order_release);
+}
+
+/** @copydoc decoder_count_fits */
+bool decoder_count_fits(DecoderCountKind kind, std::uint64_t count,
+                        std::size_t remaining_bytes) noexcept {
+  return count_fits(count, remaining_bytes, count_contract(kind));
+}
+
+}  // namespace codec_test
+#endif
 
 /**
  * @brief Implements complete version-three request encoding.
@@ -1323,6 +1567,13 @@ Result<Response> decode_response(const std::vector<std::uint8_t>& payload,
             throw CodecFailure(ErrorCode::InvalidArgument,
                                "response has too many methods");
           }
+          decoder.require_count_fits(
+              method_count, kDaemonMethodsContract.minimum_entry_bytes,
+              kDaemonMethodsContract.required_suffix_bytes);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+          observe_decoder_count(codec_test::DecoderCountKind::DaemonMethods,
+                                method_count);
+#endif
           response.daemon_info.methods.reserve(method_count);
           for (std::uint8_t index = 0U; index < method_count; ++index) {
             response.daemon_info.methods.push_back(decoder.text(64U));

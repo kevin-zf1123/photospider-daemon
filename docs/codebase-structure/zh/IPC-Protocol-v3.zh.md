@@ -56,7 +56,18 @@ create/accept-to-fcntl window；实现不声称该平台具有 atomic close-on-e
 Payload 内 integer 使用 little-endian。Text/byte vector 使用 little-endian uint32
 byte count，随后是精确 bytes。Text 必须是 canonical UTF-8，并遵守 field-specific
 limit。Boolean 只能是 zero/one。Floating parameter 保留精确 IEEE-754 binary64 bits。
-allocation/iteration 前验证 count。
+allocation、map insertion 或 iteration 前验证 count。通过 semantic maximum 后，每个
+count 都必须满足
+`count <= (remaining - required_suffix) / minimum_entry_bytes`；实现先检查 suffix
+subtraction，且不执行 multiplication。这一条统一规则覆盖 Workflow 的
+parameter/node/input/output、Value 的 shape/Region/stride 与 facet、selected-backend
+map、named Value、fallback reason、operation timing 和 daemon method。Transfer count、
+transfer bytes 与 peak live bytes 仍是三个固定 uint64 scalar，并不是 collection count。
+
+即使 count 没有超过 semantic maximum，只要它无法装入 unread bytes，就会以
+`InvalidArgument` 在任何 count-sized allocation 前拒绝。byte fence 不会重分类真正
+可接纳输入的 allocation failure：private codec allocation 仍抛出 `std::bad_alloc`，
+server handler exception fence 会将该耗尽报告为 `ResourceExhausted`。
 
 ## Request 与 response header
 

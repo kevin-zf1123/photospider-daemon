@@ -169,7 +169,8 @@ if(BUILD_TESTING)
   add_executable(test_ipc_codec tests/unit/test_ipc_codec.cpp)
   target_compile_features(test_ipc_codec PRIVATE cxx_std_17)
   target_include_directories(test_ipc_codec PRIVATE src/lib tests)
-  target_link_libraries(test_ipc_codec PRIVATE photospider_daemon_client)
+  target_link_libraries(test_ipc_codec
+                        PRIVATE photospider_daemon_test_runtime)
 
   add_executable(test_sigpipe_transport tests/unit/test_sigpipe_transport.cpp)
   target_compile_features(test_sigpipe_transport PRIVATE cxx_std_17)
