@@ -44,6 +44,12 @@ sibling source target 或 private kernel include path。
   A 仍为 Running、B 的 Job 被移除，且 Session capacity 可立即复用。其 timeout path
   会先取消 A，再回收 close future，使失败快速清理；后续 daemon shutdown 不会保留一个
   等待 A 自然 delay 的 close handler。
+- Job result-lifetime test 使用一次性、按 JobId 过滤的 observer，其位置严格在成功
+  registry find 后、record mutex 前。通过不同 real-socket handler，一条 result reader 被
+  hold，同时 release 或 Session close 成功；fresh status/result/release 变成 `NotFound`，
+  随后旧 reader 获得精确 Value，而不是 `InvalidArgument`。No-throw JobRecord retirement
+  observer/counter 证明 physical state 只在每个 registry、worker、handler 与 local shared
+  owner 都释放后析构；condition-variable/future barrier 建立全部顺序，不使用 sleep。
 - Worker exception-fence test 会在 Running 后注入 allocation、standard、nonstandard 与
   null-diagnostic primary failure，并独立叠加 secondary failure-status construction
   fault。它们要求 terminal failure 保留 primary category，必要时使用空 fallback
@@ -94,8 +100,9 @@ test control 的 production object。启用 `BUILD_TESTING=ON` 时，
 runtime source 列表，并加入 fixed exception controller。`test_ipc_codec`、
 `test_local_daemon` 与 `test_exception_fences` 只链接这一不安装的 static variant；正常
 binary 与 package consumer 只链接 production target。任何 executable 都不会同时链接
-两个 variant。codec count observer、arithmetic probe、pending-Session-create observer
-与 Session/worker fault point 只存在于 private test-runtime macro 下。
+两个 variant。codec count observer、arithmetic probe、pending-Session-create observer、
+Job-result after-find/record-retirement observer 与 Session/worker fault point 只存在于
+private test-runtime macro 下。
 
 修改 private lifecycle seam 后，须对 testing-on 与 testing-off build 的 production
 archive 手动执行 `ar -t`、demangled `nm` 与 `strings` 检查。产品中不得存在 test

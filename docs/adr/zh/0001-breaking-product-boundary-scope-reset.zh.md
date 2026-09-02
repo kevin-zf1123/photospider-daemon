@@ -42,9 +42,11 @@ authorization scope、sandbox 或 resource-isolation boundary。
 
 `session.create` 通过已安装公开 API 创建新的 kernel `GraphContext`。
 `session.close` 会拒绝新 submit、取消未完成 Job、移除仍由 global queue 拥有的
-matching record，只等待已被 worker pop 的 matching work，释放全部临时 result 并销毁
-context。Queue removal 会同步完成既有 `Queued -> Running -> Cancelled` lifecycle；
-无关 Session 的 Running Job 不参与该等待。Daemon restart 清空所有 Session。
+matching record，只等待已被 worker pop 的 matching work，删除每个 Job registry
+reference 并销毁 context。Queue removal 会同步完成既有
+`Queued -> Running -> Cancelled` lifecycle；无关 Session 的 Running Job 不参与该等待。
+已经完成 find 的 result reader 会保留 immutable terminal record，直到精确 snapshot 完成；
+任何新 lookup 都无法观察它。Daemon restart 清空所有 Session。
 
 Session retention 具有一个正值、进程全局的 `maximum_sessions` bound。Admission 会短暂
 持有 `lifecycle_mutex -> sessions_mutex`，在构造 graph/compiler 或消耗 identifier 前预留
@@ -67,8 +69,9 @@ Queued -> Running -> Succeeded | Failed | Cancelled
 
 终态不可变。取消是 cooperative best-effort；daemon 将其转发给 kernel
 cancellation source，并拒绝取消或 Session close 之后的 stale completion/result
-publication。调用 `job.release` 会移除终态记录和临时 result。允许普通进程全局
-concurrency limit 与 backpressure。
+publication。调用 `job.release` 会从 registry visibility 移除 terminal record，但不修改
+in-flight reader 已经保留的 snapshot；physical result storage 随最后一个 shared record
+owner retire。允许普通进程全局 concurrency limit 与 backpressure。
 
 Worker exception fence 接受 nullable borrowed diagnostic pointer，并只在受保护块内构造
 每个 owned string 与 `Status`。若标准异常的 diagnostic 为 null，则规范化为空 message。
@@ -125,10 +128,12 @@ protocol-error response 合法。
 
 ### Result 生命周期
 
-成功 Job 持有内存中的公开 kernel result，直到 `job.release`、Session close、
-有界终态逐出或 daemon shutdown。`job.result` 返回 typed public value encoding。
-Result 没有持久 artifact identity、filesystem publication protocol、lease、
-receipt、retention promise 或 recovery behavior。
+成功 Job 在 registry record 可见期间持有内存中的公开 kernel result。`job.release`、
+Session close、有界终态逐出或 daemon shutdown 会删除该 registry ownership，并让 fresh
+lookup 返回 `NotFound`；已经保留 shared record 的 reader 可以完成一份 coherent
+`job.result` snapshot，随后最后一个 owner 才自然销毁 result。`job.result` 返回 typed
+public value encoding。Result 没有持久 artifact identity、filesystem publication
+protocol、lease、receipt、retention promise 或 recovery behavior。
 
 ### Shutdown 与 restart
 

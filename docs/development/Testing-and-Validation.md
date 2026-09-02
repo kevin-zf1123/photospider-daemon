@@ -55,6 +55,14 @@ never a sibling source target or private kernel include path.
   timeout path cancels A before collecting the close future so failures clean
   up promptly; subsequent daemon shutdown cannot retain a close handler that
   waits for A's natural delay.
+- Job result-lifetime tests use a one-shot JobId-filtered observer strictly
+  after successful registry find and before the record mutex. Through separate
+  real-socket handlers, one result reader is held while release or Session close
+  succeeds, fresh status/result/release calls become `NotFound`, and the old
+  reader then receives the exact Value instead of `InvalidArgument`. A no-throw
+  JobRecord retirement observer/counter proves physical state is destroyed only
+  after every registry, worker, handler, and local shared owner releases it;
+  condition-variable/future barriers establish ordering without sleeps.
 - Worker exception-fence tests inject allocation, standard, nonstandard, and
   null-diagnostic primary failures after Running, with independent secondary
   failure-status construction faults. They require a terminal failure with the
@@ -115,8 +123,9 @@ controller. `test_ipc_codec`, `test_local_daemon`, and
 `test_exception_fences` link only that noninstalled static variant; normal
 binaries and package consumers link only the production target. No executable
 links both variants. The codec count observer, arithmetic probe,
-pending-Session-create observer, and Session/worker fault points exist only
-under the private test-runtime macro.
+pending-Session-create observer, Job-result after-find/record-retirement
+observers, and Session/worker fault points exist only under the private
+test-runtime macro.
 
 After changing a private lifecycle seam, manually inspect the production
 archive from both testing-on and testing-off builds with `ar -t`, demangled

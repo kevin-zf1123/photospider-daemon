@@ -213,6 +213,15 @@ class PendingSessionCreateReservation final {
 
 /** @brief Synchronized state for one queued/running/terminal execution. */
 struct JobRecord final {
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  /**
+   * @brief Reports final shared-owner retirement to the test controller.
+   * @throws Nothing.
+   * @note Production compilation has no destructor hook or controller call.
+   */
+  ~JobRecord() noexcept { test::observe_job_record_retirement(id); }
+#endif
+
   /** @brief Serializes lifecycle, outcome, and result publication. */
   mutable std::mutex mutex;
   /** @brief Wakes namespace close after worker or queued-close termination. */
@@ -231,7 +240,12 @@ struct JobRecord final {
   Status outcome;
   /** @brief Cooperative kernel cancellation source. */
   CancellationSource cancellation;
-  /** @brief In-memory successful result retained until release. */
+  /**
+   * @brief Immutable terminal success result retained by shared record
+   * lifetime.
+   * @note Registry erase makes new lookups `NotFound` but never clears a result
+   * already retained by an in-flight reader's shared `JobRecord` owner.
+   */
   std::optional<ExecutionResult> result;
 };
 
@@ -421,7 +435,9 @@ class JobRegistry final {
    * @param id Exact process-scoped ephemeral identifier.
    * @return Copied result or precise missing/not-ready/terminal failure.
    * @throws std::bad_alloc If result or diagnostic allocation fails.
-   * @note Observation is non-destructive until explicit release.
+   * @note Observation is non-destructive. A successful `find()` retains the
+   * complete record through result deep-copy even if release or Session close
+   * concurrently erases the registry reference; later lookups are `NotFound`.
    */
   Result<ExecutionResult> result(JobId id) const {
     auto record = find(id);
@@ -429,6 +445,9 @@ class JobRegistry final {
       return Result<ExecutionResult>(Status::failure(
           ErrorCode::NotFound, "ephemeral execution does not exist"));
     }
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+    test::observe_job_result_after_find(id);
+#endif
     std::lock_guard<std::mutex> lock(record->mutex);
     if (record->state == JobState::Succeeded && record->result.has_value()) {
       return Result<ExecutionResult>(*record->result);
@@ -446,11 +465,13 @@ class JobRegistry final {
   }
 
   /**
-   * @brief Erases one terminal execution and releases its result.
+   * @brief Erases the registry reference to one terminal execution.
    * @param id Exact process-scoped ephemeral identifier.
    * @return Success, `NotFound`, or nonterminal rejection.
    * @throws std::bad_alloc If a failure diagnostic allocation fails.
-   * @note Released identity cannot be observed or reused.
+   * @note Released identity cannot be newly observed or reused. In-flight
+   * readers that already retained shared record ownership keep the immutable
+   * terminal state/outcome/result until their own snapshot completes.
    */
   Status release(JobId id) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -466,7 +487,6 @@ class JobRegistry final {
         return Status::failure(ErrorCode::InvalidArgument,
                                "running execution cannot be released");
       }
-      iterator->second->result.reset();
     }
     jobs_.erase(iterator);
     return Status::success();
@@ -481,10 +501,12 @@ class JobRegistry final {
    * still owned by `queue_` and records already popped by a worker. Queued
    * records are removed from both containers and synchronously complete
    * `Queued -> Running -> Cancelled`; only popped/running records require
-   * cooperative cancellation and a terminal wait. All allocation and the
-   * noninstalled snapshot fault precede mutation. After mutation,
-   * `settle_close_records` cannot return failure. Record mutexes are never
-   * acquired while the registry mutex is held.
+   * cooperative cancellation and a terminal wait. Already terminal published
+   * records retain state/outcome/result for any reader that completed `find()`
+   * before map erasure. All allocation and the noninstalled snapshot fault
+   * precede mutation. After mutation, `settle_close_records` cannot return
+   * failure. Record mutexes are never acquired while the registry mutex is
+   * held.
    */
   void close_session(SessionId session_id) {
     std::vector<std::shared_ptr<JobRecord>> queued;
@@ -548,7 +570,9 @@ class JobRegistry final {
    * @note This post-mutation path allocates nothing and cannot report a
    * recoverable failure. Queued records synchronously traverse Running to
    * Cancelled; popped records receive cancellation and are awaited without the
-   * JobRegistry, Session-registry, or lifecycle mutex held.
+   * JobRegistry, Session-registry, or lifecycle mutex held. Terminal published
+   * result ownership is never reset by close and retires with the last shared
+   * record owner.
    */
   static void settle_close_records(
       const std::vector<std::shared_ptr<JobRecord>>& queued,
@@ -568,7 +592,6 @@ class JobRegistry final {
     }
     for (const auto& record : running) {
       std::unique_lock<std::mutex> record_lock(record->mutex);
-      record->result.reset();
       record->terminal_changed.wait(
           record_lock, [&record] { return terminal(record->state); });
     }
@@ -579,7 +602,9 @@ class JobRegistry final {
    * @param id Exact process-scoped ephemeral identifier.
    * @return Shared record, or null for stale/missing identity.
    * @throws Nothing.
-   * @note Shared ownership lets a worker finish after registry removal.
+   * @note Shared ownership lets a worker finish after registry removal and lets
+   * a reader that already found a record complete one coherent state/result
+   * snapshot after release or Session close erases the map reference.
    */
   std::shared_ptr<JobRecord> find(JobId id) const {
     std::lock_guard<std::mutex> lock(mutex_);

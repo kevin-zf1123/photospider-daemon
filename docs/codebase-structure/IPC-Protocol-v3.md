@@ -179,7 +179,10 @@ terminal wait. No unrelated Session Job participates in that wait, and
 unrelated Session create, submit, and close remain responsive. A snapshot
 allocation failure precedes every Job mutation and clears closing so the caller
 may retry. After successful settlement, close reacquires lifecycle ownership,
-removes the Session/kernel context, and releases capacity.
+removes the Session/kernel context, and releases capacity. Erasing a terminal
+Job removes its registry reference but does not reset published state, outcome,
+or result: a result handler that already retained the shared record completes
+one coherent snapshot, while every lookup begun after erasure is `NotFound`.
 
 ## Jobs
 
@@ -212,12 +215,20 @@ cancellation prevents result publication.
 ### `job.result`
 
 Only `Succeeded` returns the copied temporary in-memory result. Queued/Running
-returns `InvalidArgument`; Failed/Cancelled returns the terminal failure.
+returns `InvalidArgument`; Failed/Cancelled returns the terminal failure. A
+successful registry lookup retains shared ownership before taking the record
+mutex. Concurrent release or Session close may erase the registry reference,
+freeing logical Job capacity, but cannot clear that retained terminal snapshot.
+The old reader finishes its result deep-copy; physical record/result storage
+retires when its last worker/handler/shared owner releases it. The positive
+active-handler bound also bounds this grace period's reader population.
 
 ### `job.release`
 
-Only a terminal Job can be released. Success erases its complete record and
-temporary result. Later status/result/release calls return `NotFound`.
+Only a terminal Job can be released. Success validates terminal state and
+erases the registry reference without mutating the record. Later
+status/result/release calls return `NotFound`; an already-found reader may
+finish its immutable terminal snapshot before natural destruction.
 
 A caller retries only by `job.submit`, which creates a distinct identifier.
 
@@ -308,6 +319,10 @@ same-uid writer racing exactly between them.
   publication. Pre-mutation snapshot failure reopens the Session; successful
   settlement erases it with a fresh-id-only capacity reuse path.
 - Job state is monotonic and cancellation cannot publish success afterward.
+- Release and Session close erase terminal registry references without clearing
+  published state/outcome/result. A reader that already completed lookup owns a
+  coherent deep-copy source; fresh lookups are `NotFound`, logical capacity is
+  released at erase, and physical storage retires with the last shared owner.
 - Service dispatch exceptions preserve request correlation, clear every
   success-only payload and `shutdown_after_write`, and produce one typed
   failure. A standard exception diagnostic is a nullable borrowed pointer;

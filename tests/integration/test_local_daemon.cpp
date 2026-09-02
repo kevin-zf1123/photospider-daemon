@@ -232,11 +232,184 @@ class PendingSessionCreateGate final {
   bool exited_ = false;
 };
 
+/**
+ * @brief Holds one filtered result handler after shared-record lookup.
+ *
+ * @note A separate no-throw retirement callback observes final JobRecord
+ * destruction after every handler, registry, worker, and local shared owner has
+ * released the same record.
+ */
+class JobResultAfterFindGate final {
+ public:
+  /**
+   * @brief Creates an idle after-find and retirement observation gate.
+   * @throws Nothing.
+   */
+  JobResultAfterFindGate() noexcept = default;
+
+  /**
+   * @brief Releases and drains an entered result observer during cleanup.
+   * @throws Nothing.
+   */
+  ~JobResultAfterFindGate() noexcept { drain(); }
+
+  /**
+   * @brief Forbids duplicating address-stable synchronization state.
+   * @param other Source gate that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobResultAfterFindGate(const JobResultAfterFindGate& other) = delete;
+
+  /**
+   * @brief Forbids assigning address-stable synchronization state.
+   * @param other Source gate that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobResultAfterFindGate& operator=(const JobResultAfterFindGate& other) =
+      delete;
+
+  /**
+   * @brief Forbids moving state borrowed by process-global test observers.
+   * @param other Source gate that cannot be moved.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobResultAfterFindGate(JobResultAfterFindGate&& other) = delete;
+
+  /**
+   * @brief Forbids move-assigning borrowed synchronization state.
+   * @param other Source gate that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobResultAfterFindGate& operator=(JobResultAfterFindGate&& other) = delete;
+
+  /**
+   * @brief Blocks the single controller-filtered result handler.
+   * @param id Exact observed JobId, retained for test diagnostics.
+   * @return No value.
+   * @throws std::system_error If test synchronization fails.
+   */
+  void hold(ps::ipc::JobId id) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    observed_id_ = id;
+    entered_ = true;
+    changed_.notify_all();
+    changed_.wait(lock, [this] { return released_; });
+    exited_ = true;
+    changed_.notify_all();
+  }
+
+  /**
+   * @brief Waits until the result handler reaches the after-find boundary.
+   * @param timeout Maximum bounded wait.
+   * @return True when the filtered handler entered before the deadline.
+   * @throws std::system_error If test synchronization fails.
+   */
+  bool wait_until_entered(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, timeout, [this] { return entered_; });
+  }
+
+  /**
+   * @brief Releases the held result handler idempotently.
+   * @return No value.
+   * @throws std::system_error If test synchronization fails.
+   */
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+    changed_.notify_all();
+  }
+
+  /**
+   * @brief Records final destruction of the filtered JobRecord.
+   * @param id Exact retired JobId.
+   * @return No value.
+   * @throws Nothing; synchronization failures are swallowed in the observer.
+   */
+  void record_retirement(ps::ipc::JobId id) noexcept {
+    try {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        retired_id_ = id;
+        retired_ = true;
+      }
+      changed_.notify_all();
+    } catch (...) {
+    }
+  }
+
+  /**
+   * @brief Waits until final matching JobRecord destruction is observed.
+   * @param timeout Maximum bounded wait.
+   * @return True when retirement occurred before the deadline.
+   * @throws std::system_error If test synchronization fails.
+   */
+  bool wait_until_retired(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, timeout, [this] { return retired_; });
+  }
+
+  /**
+   * @brief Reports whether entry and retirement observed the same target id.
+   * @return True only when both complete nonzero identifiers match.
+   * @throws Nothing.
+   */
+  bool observed_same_job() const noexcept {
+    try {
+      std::lock_guard<std::mutex> lock(mutex_);
+      return observed_id_.instance != 0U && observed_id_.value != 0U &&
+             observed_id_.instance == retired_id_.instance &&
+             observed_id_.value == retired_id_.value;
+    } catch (...) {
+      return false;
+    }
+  }
+
+  /**
+   * @brief Releases and waits for an entered callback without throwing.
+   * @return No value.
+   * @throws Nothing.
+   */
+  void drain() noexcept {
+    try {
+      release();
+      std::unique_lock<std::mutex> lock(mutex_);
+      changed_.wait(lock, [this] { return !entered_ || exited_; });
+    } catch (...) {
+    }
+  }
+
+ private:
+  /** @brief Serializes after-find and retirement observations. */
+  mutable std::mutex mutex_;
+  /** @brief Wakes test, result handler, and cleanup on state changes. */
+  std::condition_variable changed_;
+  /** @brief JobId seen strictly after registry lookup. */
+  ps::ipc::JobId observed_id_;
+  /** @brief JobId seen at final shared-owner retirement. */
+  ps::ipc::JobId retired_id_;
+  /** @brief Whether the filtered result handler entered. */
+  bool entered_ = false;
+  /** @brief Whether the held result handler may continue. */
+  bool released_ = false;
+  /** @brief Whether the after-find observer returned. */
+  bool exited_ = false;
+  /** @brief Whether final JobRecord destruction was observed. */
+  bool retired_ = false;
+};
+
 /** @brief Borrowed active Running gate for one scoped regression. */
 std::atomic<JobRunningGate*> g_job_running_gate{nullptr};
 
 /** @brief Borrowed active pending-create gate for one scoped regression. */
 std::atomic<PendingSessionCreateGate*> g_pending_session_create_gate{nullptr};
+
+/** @brief Borrowed active result/retirement gate for one scoped regression. */
+std::atomic<JobResultAfterFindGate*> g_job_result_after_find_gate{nullptr};
 
 /**
  * @brief Bridges the noninstalled post-Running observer into its gate.
@@ -259,6 +432,34 @@ void hold_first_pending_session_create() {
       g_pending_session_create_gate.load(std::memory_order_acquire);
   if (gate) {
     gate->hold_first();
+  }
+}
+
+/**
+ * @brief Bridges one filtered noninstalled after-find observer into its gate.
+ * @param id Exact JobId whose shared record was retained.
+ * @return No value.
+ * @throws Any synchronization exception, fenced by the observer boundary.
+ */
+void hold_job_result_after_find(ps::ipc::JobId id) {
+  JobResultAfterFindGate* gate =
+      g_job_result_after_find_gate.load(std::memory_order_acquire);
+  if (gate) {
+    gate->hold(id);
+  }
+}
+
+/**
+ * @brief Bridges one filtered JobRecord retirement into its no-throw gate.
+ * @param id Exact retired JobId.
+ * @return No value.
+ * @throws Nothing.
+ */
+void record_job_retirement(ps::ipc::JobId id) noexcept {
+  JobResultAfterFindGate* gate =
+      g_job_result_after_find_gate.load(std::memory_order_acquire);
+  if (gate) {
+    gate->record_retirement(id);
   }
 }
 
@@ -358,6 +559,81 @@ class PendingSessionCreateHookScope final {
    */
   PendingSessionCreateHookScope& operator=(
       PendingSessionCreateHookScope&& other) = delete;
+};
+
+/**
+ * @brief Scoped installation of filtered result and retirement observers.
+ *
+ * @note The scope releases/drains an entered result callback before clearing
+ * borrowed gate storage, so early assertion returns cannot strand a handler.
+ */
+class JobResultLifetimeHookScope final {
+ public:
+  /**
+   * @brief Installs one exact JobId filter over a nonnull borrowed gate.
+   * @param id Target JobId, already published by submit.
+   * @param gate Address-stable gate that outlives this scope.
+   * @throws std::invalid_argument If id or gate is invalid.
+   */
+  JobResultLifetimeHookScope(ps::ipc::JobId id, JobResultAfterFindGate* gate)
+      : gate_(gate) {
+    if (!gate_ || id.instance == 0U || id.value == 0U) {
+      throw std::invalid_argument(
+          "JobResultLifetimeHookScope requires a valid id and gate");
+    }
+    g_job_result_after_find_gate.store(gate_, std::memory_order_release);
+    ps::ipc::test::install_job_record_retirement_observer(
+        id, &record_job_retirement);
+    ps::ipc::test::install_job_result_after_find_observer(
+        id, &hold_job_result_after_find);
+  }
+
+  /**
+   * @brief Releases the handler and clears both observers before gate teardown.
+   * @throws Nothing.
+   */
+  ~JobResultLifetimeHookScope() noexcept {
+    gate_->drain();
+    ps::ipc::test::install_job_result_after_find_observer({}, nullptr);
+    ps::ipc::test::install_job_record_retirement_observer({}, nullptr);
+    g_job_result_after_find_gate.store(nullptr, std::memory_order_release);
+  }
+
+  /**
+   * @brief Forbids duplicate process-global hook ownership.
+   * @param other Source scope that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobResultLifetimeHookScope(const JobResultLifetimeHookScope& other) = delete;
+
+  /**
+   * @brief Forbids assigning process-global hook ownership.
+   * @param other Source scope that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobResultLifetimeHookScope& operator=(
+      const JobResultLifetimeHookScope& other) = delete;
+
+  /**
+   * @brief Forbids moving one address-bound observer installation.
+   * @param other Source scope that cannot be moved.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobResultLifetimeHookScope(JobResultLifetimeHookScope&& other) = delete;
+
+  /**
+   * @brief Forbids move-assigning process-global observer ownership.
+   * @param other Source scope that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobResultLifetimeHookScope& operator=(JobResultLifetimeHookScope&& other) =
+      delete;
+
+ private:
+  /** @brief Borrowed gate released and drained during scope teardown. */
+  JobResultAfterFindGate* gate_;
 };
 
 /**
@@ -523,6 +799,33 @@ ps::ipc::JobStatus wait_terminal(ps::ipc::Client* client, ps::ipc::JobId id) {
       return status.value();
     }
     std::this_thread::sleep_for(kJobStatusPollInterval);
+  }
+  throw std::runtime_error("execution did not reach terminal state");
+}
+
+/**
+ * @brief Observes a terminal Job through real IPC without elapsed sleeps.
+ * @param client Connected sequential client.
+ * @param id Existing execution identifier.
+ * @return Terminal status.
+ * @throws std::runtime_error On RPC failure or deadline expiry.
+ * @note Each status round trip yields through the real socket/server boundary;
+ * the helper is reserved for deterministic barrier regressions that must not
+ * establish ordering with `sleep_for`.
+ */
+ps::ipc::JobStatus wait_terminal_without_sleep(ps::ipc::Client* client,
+                                               ps::ipc::JobId id) {
+  const auto deadline = std::chrono::steady_clock::now() + kJobStatusTimeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto status = client->job_status(id);
+    if (!status.ok()) {
+      throw std::runtime_error(status.status().message);
+    }
+    if (status.value().state == ps::ipc::JobState::Succeeded ||
+        status.value().state == ps::ipc::JobState::Failed ||
+        status.value().state == ps::ipc::JobState::Cancelled) {
+      return status.value();
+    }
   }
   throw std::runtime_error("execution did not reach terminal state");
 }
@@ -1097,6 +1400,124 @@ int verify_session_create_failure_rollback() {
   return 0;
 }
 
+/** @brief Registry-reference removal used by one in-flight result regression.
+ */
+enum class JobRecordRemoval : std::uint32_t {
+  /** @brief Remove the terminal Job through `job.release`. */
+  Release = 1U,
+  /** @brief Remove the terminal Job while closing its Session. */
+  SessionClose = 2U,
+};
+
+/**
+ * @brief Proves an already-found result reader survives registry removal.
+ *
+ * A public result request is held strictly after `JobRegistry::find` retained
+ * the target shared record and before it acquires the record mutex. A second
+ * real handler releases the terminal Job or closes its Session, and a third
+ * handler proves all fresh status/result/release lookups are `NotFound`.
+ * Releasing the barrier must let the old reader copy the exact value, after
+ * which the retirement observer proves the last shared owner destroys the
+ * record.
+ *
+ * @param removal Exact release or Session-close mutation under test.
+ * @return Zero when result linearization, fresh lookup, and retirement pass.
+ * @throws std::bad_alloc If test/server/RPC staging allocation fails.
+ * @throws std::system_error If asynchronous or barrier synchronization fails.
+ * @throws std::runtime_error If a real IPC terminal observation fails.
+ * @note No sleep establishes ordering; one-shot JobId filtering and condition-
+ * variable/future barriers provide every happens-before edge.
+ */
+int verify_in_flight_result_survives_removal(JobRecordRemoval removal) {
+  using ps::ErrorCode;
+  using ps::ExecutionResult;
+  using ps::ipc::Client;
+  using ps::ipc::JobState;
+
+  ps::ipc::test::reset_exception_fence_faults();
+  const std::string path = socket_path();
+  internal::Server server(
+      internal::ServerConfig{path,
+                             internal::ServiceConfig{1U, 8U, 2U, false},
+                             16,
+                             16U,
+                             {},
+                             {}});
+  ps::ipc::test::ServerRunGuard server_run(&server);
+  Client coordinator;
+  Client result_client;
+  Client mutation_client;
+  Client fresh_client;
+  PS_IPC_CHECK(coordinator.connect(path).ok());
+  PS_IPC_CHECK(result_client.connect(path).ok());
+  PS_IPC_CHECK(mutation_client.connect(path).ok());
+  PS_IPC_CHECK(fresh_client.connect(path).ok());
+
+  auto session = coordinator.session_create(addition_document(2.0, 3.0));
+  PS_IPC_CHECK(session.ok());
+  auto job = coordinator.job_submit(session.value());
+  PS_IPC_CHECK(job.ok());
+  const auto terminal_status =
+      wait_terminal_without_sleep(&coordinator, job.value());
+  PS_IPC_CHECK(terminal_status.state == JobState::Succeeded);
+
+  JobResultAfterFindGate result_gate;
+  JobResultLifetimeHookScope lifetime_hook(job.value(), &result_gate);
+  GateReleasingFuture<ps::Result<ExecutionResult>, JobResultAfterFindGate>
+      in_flight_result(&result_gate,
+                       [&] { return result_client.job_result(job.value()); });
+  PS_IPC_CHECK(result_gate.wait_until_entered(kSessionCloseTimeout));
+
+  const ps::Status removed =
+      removal == JobRecordRemoval::Release
+          ? mutation_client.job_release(job.value())
+          : mutation_client.session_close(session.value());
+  PS_IPC_CHECK(removed.ok());
+
+  auto fresh_status = fresh_client.job_status(job.value());
+  auto fresh_result = fresh_client.job_result(job.value());
+  const ps::Status fresh_release = fresh_client.job_release(job.value());
+  PS_IPC_CHECK(!fresh_status.ok());
+  PS_IPC_CHECK(fresh_status.status().code == ErrorCode::NotFound);
+  PS_IPC_CHECK(!fresh_result.ok());
+  PS_IPC_CHECK(fresh_result.status().code == ErrorCode::NotFound);
+  PS_IPC_CHECK(!fresh_release.ok());
+  PS_IPC_CHECK(fresh_release.code == ErrorCode::NotFound);
+  PS_IPC_CHECK(ps::ipc::test::job_record_retirement_count(job.value()) == 0U);
+
+  result_gate.release();
+  PS_IPC_CHECK(in_flight_result.ready_within(kSessionCloseTimeout));
+  auto retained_result = in_flight_result.get();
+  PS_IPC_CHECK(retained_result.ok());
+  const auto sum = retained_result.value().values.find("sum");
+  PS_IPC_CHECK(sum != retained_result.value().values.end());
+  auto scalar = sum->second.as_float64();
+  PS_IPC_CHECK(scalar.ok());
+  PS_IPC_CHECK(scalar.value() == 5.0);
+  PS_IPC_CHECK(result_gate.wait_until_retired(kSessionCloseTimeout));
+  PS_IPC_CHECK(result_gate.observed_same_job());
+  PS_IPC_CHECK(ps::ipc::test::job_record_retirement_count(job.value()) == 1U);
+
+  auto after_removal = fresh_client.daemon_info();
+  PS_IPC_CHECK(after_removal.ok());
+  PS_IPC_CHECK(after_removal.value().active_jobs == 0U);
+  if (removal == JobRecordRemoval::Release) {
+    PS_IPC_CHECK(after_removal.value().active_sessions == 1U);
+    PS_IPC_CHECK(mutation_client.session_close(session.value()).ok());
+  } else {
+    PS_IPC_CHECK(after_removal.value().active_sessions == 0U);
+  }
+  auto settled = fresh_client.daemon_info();
+  PS_IPC_CHECK(settled.ok());
+  PS_IPC_CHECK(settled.value().active_sessions == 0U);
+  PS_IPC_CHECK(settled.value().active_jobs == 0U);
+  PS_IPC_CHECK(fresh_client.daemon_shutdown().ok());
+  PS_IPC_CHECK(server_run.join().ok());
+  PS_IPC_CHECK(server.active_handler_count() == 0U);
+  PS_IPC_CHECK(server.retained_handler_count() == 0U);
+  return 0;
+}
+
 }  // namespace
 
 /**
@@ -1117,6 +1538,10 @@ int main() {
 
   PS_IPC_CHECK(verify_session_create_failure_rollback() == 0);
   PS_IPC_CHECK(verify_pending_session_create_reservation() == 0);
+  PS_IPC_CHECK(
+      verify_in_flight_result_survives_removal(JobRecordRemoval::Release) == 0);
+  PS_IPC_CHECK(verify_in_flight_result_survives_removal(
+                   JobRecordRemoval::SessionClose) == 0);
 
   for (internal::ServerConstructionStage stage :
        {internal::ServerConstructionStage::AfterListenerBind,
