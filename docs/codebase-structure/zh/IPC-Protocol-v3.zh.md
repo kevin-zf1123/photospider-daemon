@@ -154,13 +154,19 @@ Request 包含 `SessionId`。Close 会原子地把 open record 标记为 closing
 竞争；此后 submit 与 repeated close 返回 `NotFound`，retained record 则继续占用 Session
 capacity。Process-wide lifecycle lock 会在 Job registry 移除 matching queue-owned record
 并同步完成其既有 `Queued -> Running -> Cancelled` 迁移前释放。已被 worker pop 的
-matching record 保留 cooperative cancellation、stale-publication fence 与 terminal wait；
-无关 Session Job 不参与该等待，无关 Session 的 create、submit 与 close 仍可响应。
-Snapshot allocation failure 发生在所有 Job mutation 前，并会清除 closing 以允许 caller
-retry。成功 settle 后，close 重新取得 lifecycle ownership，移除 Session/kernel context
-并释放 capacity。删除 terminal Job 时只移除其 registry reference，不会 reset 已发布的
-state、outcome 或 result：已经保留 shared record 的 result handler 会完成一份 coherent
-snapshot，erase 后才开始的每个 lookup 都返回 `NotFound`。
+matching record 会逐个在其 JobRecord mutex 下仲裁。若 worker 已发布 terminal state，
+close 不请求 cancellation，并保留 state、outcome 与 result；若 record 仍 nonterminal，
+close 会在持有 worker 最终 cancellation check/result publication 所使用的同一 mutex 时
+请求 cancellation。Worker 若先取得 mutex，可以在 close 前发布 `Succeeded`，且
+already-found reader 继续拥有有效 terminal snapshot；close 若先取得 mutex，则会在 worker
+finalize 前使 cancellation 可见，worker 只能发布不含 result 的 `Cancelled`。Close 在
+独立 terminal wait 前释放每个 record mutex，且等待时不持有 Job-registry、Session-registry
+或 lifecycle mutex。无关 Session Job 不参与该等待，无关 Session 的 create、submit 与
+close 仍可响应。Snapshot allocation failure 发生在所有 Job mutation 前，并会清除
+closing 以允许 caller retry。成功 settle 后，close 重新取得 lifecycle ownership，移除
+Session/kernel context 并释放 capacity。删除 terminal Job 时只移除其 registry reference，
+不会 reset 已发布的 state、outcome 或 result：已经保留 shared record 的 result handler
+会完成一份 coherent snapshot，erase 后才开始的每个 lookup 都返回 `NotFound`。
 
 ## Job
 
@@ -270,9 +276,12 @@ credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。P
   reservation，在两个锁之外 compile，且只发布完整 record。每个 pre-publication failure
   都会精确回滚一个 reservation 且不消耗 id；pending create 不是 active Session。
 - Session close 与 submit 原子竞争，在标记 closing 期间保持占用 capacity，等待自身已
-  pop work 前释放 global lifecycle serialization，精确移除 queued ownership，并拒绝后续
-  result publication。Pre-mutation snapshot failure 会重新打开 Session；成功 settle 后
-  erase，并只通过 fresh id 复用 capacity。
+  pop work 前释放 global lifecycle serialization，并精确移除 queued ownership。已 pop
+  record 的 close cancellation 与 worker final publication 共享 record mutex：已由 worker
+  发布的 terminal result 会在不 cancel 的情况下保留；close 若先对 nonterminal record
+  作出决策，则会在 worker 最终检查前请求 cancellation，并禁止 result publication。
+  Pre-mutation snapshot failure 会重新打开 Session；成功 settle 后 erase，并只通过 fresh
+  id 复用 capacity。
 - Job state 单调，cancellation 后不能发布 success。
 - Release 与 Session close 删除 terminal registry reference 时不清除已发布的
   state/outcome/result。已经完成 lookup 的 reader 拥有 coherent deep-copy source；fresh

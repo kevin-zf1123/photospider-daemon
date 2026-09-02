@@ -174,15 +174,24 @@ while the retained record continues consuming Session capacity. The
 process-wide lifecycle lock is released before the Job registry removes
 matching queue-owned records and synchronously completes their existing
 `Queued -> Running -> Cancelled` transitions. Matching records already popped
-by a worker retain cooperative cancellation, stale-publication fences, and a
-terminal wait. No unrelated Session Job participates in that wait, and
-unrelated Session create, submit, and close remain responsive. A snapshot
-allocation failure precedes every Job mutation and clears closing so the caller
-may retry. After successful settlement, close reacquires lifecycle ownership,
-removes the Session/kernel context, and releases capacity. Erasing a terminal
-Job removes its registry reference but does not reset published state, outcome,
-or result: a result handler that already retained the shared record completes
-one coherent snapshot, while every lookup begun after erasure is `NotFound`.
+by a worker are arbitrated one at a time under that JobRecord's mutex. If the
+worker already published a terminal state, close does not request cancellation
+and preserves state, outcome, and result. If the record is nonterminal, close
+requests cancellation while holding the same mutex used by the worker's final
+cancellation check and result publication. A worker that acquires the mutex
+first may publish `Succeeded` before close and that terminal snapshot remains
+valid for an already-found reader; close that acquires it first makes
+cancellation visible before the worker can finalize, so the worker publishes
+`Cancelled` without a result. Close releases each record mutex before its
+separate terminal wait and holds no Job-registry, Session-registry, or lifecycle
+mutex during that wait. No unrelated Session Job participates, and unrelated
+Session create, submit, and close remain responsive. A snapshot allocation
+failure precedes every Job mutation and clears closing so the caller may retry.
+After successful settlement, close reacquires lifecycle ownership, removes the
+Session/kernel context, and releases capacity. Erasing a terminal Job removes
+its registry reference but does not reset published state, outcome, or result:
+a result handler that already retained the shared record completes one coherent
+snapshot, while every lookup begun after erasure is `NotFound`.
 
 ## Jobs
 
@@ -315,9 +324,13 @@ same-uid writer racing exactly between them.
   Sessions.
 - Session close is atomic against submit, retains capacity while marked
   closing, releases global lifecycle serialization before waiting only for its
-  own popped work, removes queued ownership exactly, and rejects later result
-  publication. Pre-mutation snapshot failure reopens the Session; successful
-  settlement erases it with a fresh-id-only capacity reuse path.
+  own popped work, and removes queued ownership exactly. Popped-record close
+  cancellation and worker final publication share the record mutex: an
+  already-terminal worker result is preserved without cancellation, while a
+  close-first nonterminal decision requests cancellation before the worker's
+  final check and forbids result publication. Pre-mutation snapshot failure
+  reopens the Session; successful settlement erases it with a fresh-id-only
+  capacity reuse path.
 - Job state is monotonic and cancellation cannot publish success afterward.
 - Release and Session close erase terminal registry references without clearing
   published state/outcome/result. A reader that already completed lookup owns a

@@ -222,7 +222,10 @@ struct JobRecord final {
   ~JobRecord() noexcept { test::observe_job_record_retirement(id); }
 #endif
 
-  /** @brief Serializes lifecycle, outcome, and result publication. */
+  /**
+   * @brief Serializes lifecycle, close cancellation arbitration, outcome, and
+   * result publication.
+   */
   mutable std::mutex mutex;
   /** @brief Wakes namespace close after worker or queued-close termination. */
   std::condition_variable terminal_changed;
@@ -501,12 +504,13 @@ class JobRegistry final {
    * still owned by `queue_` and records already popped by a worker. Queued
    * records are removed from both containers and synchronously complete
    * `Queued -> Running -> Cancelled`; only popped/running records require
-   * cooperative cancellation and a terminal wait. Already terminal published
-   * records retain state/outcome/result for any reader that completed `find()`
-   * before map erasure. All allocation and the noninstalled snapshot fault
-   * precede mutation. After mutation, `settle_close_records` cannot return
-   * failure. Record mutexes are never acquired while the registry mutex is
-   * held.
+   * cooperative cancellation and a terminal wait. Popped-record cancellation
+   * shares the record mutex with worker final publication: an already-terminal
+   * worker result wins and is preserved, while a close that locks first
+   * requests cancellation before the worker can recheck and publish. All
+   * allocation and the noninstalled snapshot fault precede mutation. After
+   * mutation, `settle_close_records` cannot return failure. Record mutexes are
+   * never acquired while the registry mutex is held.
    */
   void close_session(SessionId session_id) {
     std::vector<std::shared_ptr<JobRecord>> queued;
@@ -569,10 +573,12 @@ class JobRegistry final {
    * @throws Nothing under valid mutex/condition-variable ownership.
    * @note This post-mutation path allocates nothing and cannot report a
    * recoverable failure. Queued records synchronously traverse Running to
-   * Cancelled; popped records receive cancellation and are awaited without the
-   * JobRegistry, Session-registry, or lifecycle mutex held. Terminal published
-   * result ownership is never reset by close and retires with the last shared
-   * record owner.
+   * Cancelled. Each popped record is locked for one cancellation decision:
+   * terminal state/outcome/result are preserved without cancellation, while a
+   * nonterminal record is cancelled under the same mutex used by worker final
+   * publication. Terminal waiting remains a separate pass with no registry,
+   * Session, or lifecycle mutex held. Published result ownership is never reset
+   * by close and retires with the last shared record owner.
    */
   static void settle_close_records(
       const std::vector<std::shared_ptr<JobRecord>>& queued,
@@ -588,6 +594,13 @@ class JobRegistry final {
       record->terminal_changed.notify_all();
     }
     for (const auto& record : running) {
+      std::lock_guard<std::mutex> record_lock(record->mutex);
+      if (terminal(record->state)) {
+        continue;
+      }
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+      test::observe_session_close_cancellation(record->id);
+#endif
       static_cast<void>(record->cancellation.cancel());
     }
     for (const auto& record : running) {
@@ -692,6 +705,10 @@ class JobRegistry final {
         }
         return;
       }
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+      test::observe_job_final_publication(
+          record->id, test::JobFinalPublicationPoint::BeforeRecordLock);
+#endif
       std::lock_guard<std::mutex> lock(record->mutex);
       if (record->cancellation.token().cancelled()) {
         record->state = JobState::Cancelled;
@@ -700,6 +717,10 @@ class JobRegistry final {
             "cancelled execution result publication was rejected");
         record->result.reset();
       } else {
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+        test::observe_job_final_publication(
+            record->id, test::JobFinalPublicationPoint::AfterCancellationCheck);
+#endif
         record->result = executed.take_value();
         record->outcome = Status::success();
         record->state = JobState::Succeeded;

@@ -73,6 +73,38 @@ std::atomic<ShutdownResponseWriteObserver> response_write_observer{nullptr};
 /** @brief Installed post-Running execution observer, or null. */
 std::atomic<JobRunningObserver> job_running_observer{nullptr};
 
+/** @brief Short atomic spelling for the final-publication callback slot. */
+using FinalObserverAtomic = std::atomic<JobFinalPublicationObserver>;
+
+/** @brief Installed filtered final-publication observer, or null. */
+FinalObserverAtomic job_final_publication_observer{nullptr};
+
+/** @brief Instance half of the one-shot final-publication filter. */
+std::atomic<std::uint64_t> job_final_publication_filter_instance{0U};
+
+/** @brief Value half of the one-shot final-publication filter. */
+std::atomic<std::uint64_t> job_final_publication_filter_value{0U};
+
+/** @brief Exact worker boundary selected by the final-publication filter. */
+std::atomic<JobFinalPublicationPoint> job_final_publication_filter_point{
+    JobFinalPublicationPoint::BeforeRecordLock};  // NOLINT
+
+/** @brief One while the filtered final-publication observer may still fire. */
+std::atomic<std::uint32_t> job_final_publication_remaining{0U};
+
+/** @brief Installed filtered Session-close cancellation observer, or null. */
+std::atomic<SessionCloseCancellationObserver>
+    session_close_cancellation_observer{nullptr};  // NOLINT
+
+/** @brief Instance half of the one-shot Session-close cancellation filter. */
+std::atomic<std::uint64_t> session_close_cancellation_filter_instance{0U};
+
+/** @brief Value half of the one-shot Session-close cancellation filter. */
+std::atomic<std::uint64_t> session_close_cancellation_filter_value{0U};
+
+/** @brief One while the filtered close-cancellation observer may still fire. */
+std::atomic<std::uint32_t> session_close_cancellation_remaining{0U};
+
 /** @brief Installed filtered Job-result after-find observer, or null. */
 std::atomic<JobResultAfterFindObserver> job_result_after_find_observer{nullptr};
 
@@ -133,6 +165,17 @@ void reset_exception_fence_faults() noexcept {
   response_ready_observer.store(nullptr, std::memory_order_release);
   response_write_observer.store(nullptr, std::memory_order_release);
   job_running_observer.store(nullptr, std::memory_order_release);
+  job_final_publication_remaining.store(0U, std::memory_order_release);
+  job_final_publication_observer.store(nullptr, std::memory_order_release);
+  job_final_publication_filter_instance.store(0U, std::memory_order_relaxed);
+  job_final_publication_filter_value.store(0U, std::memory_order_relaxed);
+  job_final_publication_filter_point.store(
+      JobFinalPublicationPoint::BeforeRecordLock, std::memory_order_relaxed);
+  session_close_cancellation_remaining.store(0U, std::memory_order_release);
+  session_close_cancellation_observer.store(nullptr, std::memory_order_release);
+  session_close_cancellation_filter_instance.store(0U,
+                                                   std::memory_order_relaxed);
+  session_close_cancellation_filter_value.store(0U, std::memory_order_relaxed);
   job_result_after_find_remaining.store(0U, std::memory_order_release);
   job_result_after_find_observer.store(nullptr, std::memory_order_release);
   job_result_filter_instance.store(0U, std::memory_order_relaxed);
@@ -160,6 +203,35 @@ void install_shutdown_response_observers(
 /** @copydetails install_job_running_observer */
 void install_job_running_observer(JobRunningObserver observer) noexcept {
   job_running_observer.store(observer, std::memory_order_release);
+}
+
+/** @copydetails install_job_final_publication_observer */
+void install_job_final_publication_observer(
+    JobId id, JobFinalPublicationPoint point,
+    JobFinalPublicationObserver observer) noexcept {
+  job_final_publication_remaining.store(0U, std::memory_order_relaxed);
+  job_final_publication_observer.store(observer, std::memory_order_relaxed);
+  job_final_publication_filter_instance.store(observer ? id.instance : 0U,
+                                              std::memory_order_relaxed);
+  job_final_publication_filter_value.store(observer ? id.value : 0U,
+                                           std::memory_order_relaxed);
+  job_final_publication_filter_point.store(point, std::memory_order_relaxed);
+  job_final_publication_remaining.store(observer ? 1U : 0U,
+                                        std::memory_order_release);
+}
+
+/** @copydetails install_session_close_cancellation_observer */
+void install_session_close_cancellation_observer(
+    JobId id, SessionCloseCancellationObserver observer) noexcept {
+  session_close_cancellation_remaining.store(0U, std::memory_order_relaxed);
+  session_close_cancellation_observer.store(observer,
+                                            std::memory_order_relaxed);
+  session_close_cancellation_filter_instance.store(observer ? id.instance : 0U,
+                                                   std::memory_order_relaxed);
+  session_close_cancellation_filter_value.store(observer ? id.value : 0U,
+                                                std::memory_order_relaxed);
+  session_close_cancellation_remaining.store(observer ? 1U : 0U,
+                                             std::memory_order_release);
 }
 
 /** @copydetails install_job_result_after_find_observer */
@@ -203,6 +275,45 @@ void observe_job_running() noexcept {
   try {
     observer();
   } catch (...) {
+  }
+}
+
+/** @copydetails observe_job_final_publication */
+void observe_job_final_publication(JobId id,
+                                   JobFinalPublicationPoint point) noexcept {
+  if (point !=
+          job_final_publication_filter_point.load(std::memory_order_relaxed) ||
+      !matches_job_filter(id, job_final_publication_filter_instance,
+                          job_final_publication_filter_value)) {
+    return;
+  }
+  std::uint32_t expected = 1U;
+  if (!job_final_publication_remaining.compare_exchange_strong(
+          expected, 0U, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    return;
+  }
+  const JobFinalPublicationObserver observer =
+      job_final_publication_observer.load(std::memory_order_acquire);
+  if (observer) {
+    observer(id, point);
+  }
+}
+
+/** @copydetails observe_session_close_cancellation */
+void observe_session_close_cancellation(JobId id) noexcept {
+  if (!matches_job_filter(id, session_close_cancellation_filter_instance,
+                          session_close_cancellation_filter_value)) {
+    return;
+  }
+  std::uint32_t expected = 1U;
+  if (!session_close_cancellation_remaining.compare_exchange_strong(
+          expected, 0U, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    return;
+  }
+  const SessionCloseCancellationObserver observer =
+      session_close_cancellation_observer.load(std::memory_order_acquire);
+  if (observer) {
+    observer(id);
   }
 }
 
