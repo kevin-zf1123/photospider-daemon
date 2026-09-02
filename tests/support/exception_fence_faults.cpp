@@ -93,10 +93,12 @@ void install_shutdown_response_observers(
   response_ready_observer.store(ready, std::memory_order_release);
 }
 
+/** @copydetails install_job_running_observer */
 void install_job_running_observer(JobRunningObserver observer) noexcept {
   job_running_observer.store(observer, std::memory_order_release);
 }
 
+/** @copydetails observe_job_running */
 void observe_job_running() noexcept {
   const JobRunningObserver observer =
       job_running_observer.load(std::memory_order_acquire);
