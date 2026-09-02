@@ -61,6 +61,13 @@ never a sibling source target or private kernel include path.
   `BUILD_SHARED_LIBS=ON` package gate also proves that this target remains a
   usable static archive and creates no shared client ABI.
 
+The nested package consumer exposes a generator-aware
+`run_photospider_daemon_consumer` target whose command uses the executable
+target-file expression. The outer gate passes its exact generator,
+platform/toolset when present, and active configuration, then builds that run
+target. Single-config and multi-config layouts therefore require no guessed
+build root, configuration directory, executable suffix, or bundle path.
+
 ## Product and test runtime separation
 
 The installed `PhotospiderDaemon::client` and normal `photospiderd` executable
