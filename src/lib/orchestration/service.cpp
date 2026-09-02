@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <exception>
 #include <map>
@@ -94,6 +95,120 @@ struct SessionRecord final {
    * and repeated close as `NotFound` while its popped Jobs drain.
    */
   bool closing = false;
+};
+
+/**
+ * @brief Rolls back one unpublished Session-create capacity reservation.
+ *
+ * @note The caller reserves and commits only while holding
+ * `lifecycle_mutex -> sessions_mutex`. Destruction reacquires the same order,
+ * so every validation, construction, or map-publication failure releases
+ * exactly one pending slot without touching Session identity.
+ */
+class PendingSessionCreateReservation final {
+ public:
+  /**
+   * @brief Binds one inactive reservation to its lock domain and counter.
+   * @param lifecycle_mutex Lifecycle mutex that must be acquired first.
+   * @param sessions_mutex Session-state mutex acquired second.
+   * @param pending_count Counter protected by the two-mutex order.
+   * @throws Nothing.
+   */
+  PendingSessionCreateReservation(std::mutex* lifecycle_mutex,
+                                  std::mutex* sessions_mutex,
+                                  std::size_t* pending_count) noexcept
+      : lifecycle_mutex_(lifecycle_mutex),
+        sessions_mutex_(sessions_mutex),
+        pending_count_(pending_count) {}
+
+  /**
+   * @brief Releases one active unpublished reservation during scope exit.
+   * @throws Nothing under valid mutex/counter invariants.
+   * @note A mutex failure or zero counter violates internal ownership and
+   * terminates rather than leaking capacity or publishing a false success.
+   */
+  ~PendingSessionCreateReservation() noexcept {
+    if (!active_) {
+      return;
+    }
+    std::lock_guard<std::mutex> lifecycle_lock(*lifecycle_mutex_);
+    std::lock_guard<std::mutex> sessions_lock(*sessions_mutex_);
+    if (*pending_count_ == 0U) {
+      std::terminate();
+    }
+    --*pending_count_;
+  }
+
+  /**
+   * @brief Forbids duplicate rollback ownership.
+   * @param other Source reservation that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateReservation(
+      const PendingSessionCreateReservation& other) = delete;
+  /**
+   * @brief Forbids assigning duplicate rollback ownership.
+   * @param other Source reservation that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateReservation& operator=(
+      const PendingSessionCreateReservation& other) = delete;
+  /**
+   * @brief Forbids moving address-bound mutex/counter ownership.
+   * @param other Source reservation that cannot be moved.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateReservation(PendingSessionCreateReservation&& other) =
+      delete;
+  /**
+   * @brief Forbids move-assigning address-bound rollback ownership.
+   * @param other Source reservation that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateReservation& operator=(
+      PendingSessionCreateReservation&& other) = delete;
+
+  /**
+   * @brief Increments and activates the reservation under both locks.
+   * @return No value.
+   * @throws Nothing.
+   * @note The caller has already proved bounded capacity while holding
+   * `lifecycle_mutex -> sessions_mutex`.
+   */
+  void reserve_while_locked() noexcept {
+    if (active_ || !lifecycle_mutex_ || !sessions_mutex_ || !pending_count_) {
+      std::terminate();
+    }
+    ++*pending_count_;
+    active_ = true;
+  }
+
+  /**
+   * @brief Converts the pending slot into one successfully inserted Session.
+   * @return No value.
+   * @throws Nothing.
+   * @note Call only after map insertion while both locks remain held. Session
+   * identity is incremented separately after this no-throw ownership commit.
+   */
+  void commit_while_locked() noexcept {
+    if (!active_ || *pending_count_ == 0U) {
+      std::terminate();
+    }
+    --*pending_count_;
+    active_ = false;
+  }
+
+ private:
+  /** @brief Borrowed first lock in the capacity ownership order. */
+  std::mutex* lifecycle_mutex_;
+  /** @brief Borrowed second lock protecting Session state. */
+  std::mutex* sessions_mutex_;
+  /** @brief Borrowed pending-create capacity counter. */
+  std::size_t* pending_count_;
+  /** @brief Whether destruction must release one unpublished slot. */
+  bool active_ = false;
 };
 
 /** @brief Synchronized state for one queued/running/terminal execution. */
@@ -729,17 +844,28 @@ struct Service::Impl final {
   }
 
   /**
-   * @brief Creates and compiler-validates one immutable namespace.
+   * @brief Reserves, compiler-validates, and publishes one immutable
+   * namespace.
    * @param document Complete public compiler source document.
    * @return New ephemeral SessionId or validation/resource failure.
    * @throws std::bad_alloc If graph, compiler, or registry allocation fails.
-   * @note No internal IR is retained in or accepted from the request.
+   * @note A short `lifecycle_mutex -> sessions_mutex` section reserves one
+   * capacity slot without consuming an id. Graph construction and compilation
+   * run with neither lock held. A second short section inserts the complete
+   * record, releases the reservation, and only then advances the id. Every
+   * failure before insertion rolls back the pending slot; pending creates are
+   * not Sessions and are excluded from `daemon.info.active_sessions`. No
+   * internal IR is retained in or accepted from the request.
    */
   Result<SessionId> create_session(const WorkflowDocument& document) {
-    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
+    PendingSessionCreateReservation reservation(
+        &lifecycle_mutex, &sessions_mutex, &pending_session_creates);
     {
+      std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
       std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
-      if (sessions.size() >= config.maximum_sessions) {
+      const std::size_t maximum_sessions = config.maximum_sessions;
+      if (sessions.size() >= maximum_sessions ||
+          pending_session_creates >= maximum_sessions - sessions.size()) {
         Status capacity;
         capacity.code = ErrorCode::ResourceExhausted;
         return Result<SessionId>(std::move(capacity));
@@ -748,7 +874,13 @@ struct Service::Impl final {
         return Result<SessionId>(Status::failure(
             ErrorCode::ResourceExhausted, "ephemeral namespace id exhausted"));
       }
+      reservation.reserve_while_locked();
     }
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+    test::observe_session_create_pending();
+    test::hit_exception_fence_fault(
+        test::ExceptionFenceFaultPoint::SessionCreateCandidate);
+#endif
     auto candidate = std::make_shared<GraphContext>(document);
     auto validation = compiler.compile(*candidate);
     if (!validation.ok()) {
@@ -756,13 +888,23 @@ struct Service::Impl final {
     }
     auto record = std::make_shared<SessionRecord>();
     record->id.instance = instance_id;
-    record->id.value = next_session_id;
     record->graph = std::move(candidate);
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
     std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
+    if (next_session_id == 0U) {
+      return Result<SessionId>(Status::failure(
+          ErrorCode::ResourceExhausted, "ephemeral namespace id exhausted"));
+    }
+    record->id.value = next_session_id;
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+    test::hit_exception_fence_fault(
+        test::ExceptionFenceFaultPoint::SessionCreatePublication);
+#endif
     if (!sessions.emplace(record->id.value, record).second) {
       return Result<SessionId>(Status::failure(
           ErrorCode::Internal, "ephemeral namespace id was duplicated"));
     }
+    reservation.commit_while_locked();
     ++next_session_id;
     return Result<SessionId>(record->id);
   }
@@ -860,7 +1002,8 @@ struct Service::Impl final {
    * @brief Returns the current namespace count.
    * @return Current registry size.
    * @throws Nothing.
-   * @note The observation may change immediately after return.
+   * @note Pending create reservations are excluded; the observation may change
+   * immediately after return.
    */
   std::uint64_t session_count() const noexcept {
     std::lock_guard<std::mutex> lock(sessions_mutex);
@@ -881,8 +1024,9 @@ struct Service::Impl final {
   JobRegistry jobs;
   /**
    * @brief Serializes open/closing transitions against submit publication.
-   * @note Always precedes `sessions_mutex`; never held across Job cancellation,
-   * record mutex acquisition, worker execution, or terminal waiting.
+   * @note Always precedes `sessions_mutex`; never held across GraphContext
+   * construction, compilation, Job cancellation, record mutex acquisition,
+   * worker execution, or terminal waiting.
    */
   std::mutex lifecycle_mutex;
   /**
@@ -893,6 +1037,12 @@ struct Service::Impl final {
   mutable std::mutex sessions_mutex;
   /** @brief Ephemeral namespace map. */
   std::map<std::uint64_t, std::shared_ptr<SessionRecord>> sessions;
+  /**
+   * @brief Unpublished Session-create capacity reservations.
+   * @note Protected by `lifecycle_mutex -> sessions_mutex`; combined with
+   * `sessions.size()` for admission but excluded from Session observation.
+   */
+  std::size_t pending_session_creates = 0U;
   /** @brief Next nonzero namespace id. */
   std::uint64_t next_session_id = 1U;
   /**

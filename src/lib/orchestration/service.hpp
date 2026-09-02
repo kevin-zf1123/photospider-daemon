@@ -95,6 +95,10 @@ class Service final {
    * success-only payload. Session close publishes an internal closing state
    * before releasing global lifecycle serialization and waiting only for its
    * own popped Jobs; unrelated Session create/submit/close can continue.
+   * Session create similarly reserves capacity under a short lifecycle/Session
+   * critical section, constructs and compiles outside both locks, and
+   * publishes only a complete record. Pending creates count for admission but
+   * not `daemon.info.active_sessions` and consume no id before insertion.
    */
   [[nodiscard]] Response dispatch(const Request& request) noexcept;
 

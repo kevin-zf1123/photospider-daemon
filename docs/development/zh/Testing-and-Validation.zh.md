@@ -27,7 +27,13 @@ sibling source target 或 private kernel include path。
   correlation；incomplete header 只使用 sentinel。Server 返回一个 typed failure 后关闭，
   且不产生 state mutation 或 declared-length allocation。
 - Session test 覆盖正值 `maximum_sessions`、无 allocation/无 id 的 backpressure、
-  close/reuse、精确 cleanup 与 concurrent admission。Noninstalled post-Running gate 会在
+  close/reuse、精确 cleanup 与 concurrent admission。Noninstalled pending-create gate
+  会在 Session A 完成 capacity reservation 后将其 hold。既有 Session B 仍可 submit 与
+  close，满容量 create 会立即被拒绝；关闭 B 后，Session C 可在 A 仍处于 compilation 时
+  发布。释放 A 会证明 retained-plus-pending accounting、monotonic id 与零残留状态。
+  Compiler validation failure 以及分别注入 candidate/publication exception 会独立证明
+  reservation rollback，并证明首个成功 create 仍取得 id one。Noninstalled
+  post-Running gate 会在
   Session A 的 non-preemptible compiler boundary 前将其 hold，同时 close A 等待。A 仍以
   closing 状态保留时，第二个 worker 与独立 real-socket handler 会证明 Session B 可在显式
   deadline 内 create、submit、succeed 并 close；A 的 submit/repeated close 返回
@@ -84,8 +90,8 @@ test control 的 production object。启用 `BUILD_TESTING=ON` 时，
 runtime source 列表，并加入 fixed exception controller。`test_ipc_codec`、
 `test_local_daemon` 与 `test_exception_fences` 只链接这一不安装的 static variant；正常
 binary 与 package consumer 只链接 production target。任何 executable 都不会同时链接
-两个 variant。codec count observer 与 arithmetic probe 只存在于 private test-runtime
-macro 下。
+两个 variant。codec count observer、arithmetic probe、pending-Session-create observer
+与 Session/worker fault point 只存在于 private test-runtime macro 下。
 
 修改 private lifecycle seam 后，须对 testing-on 与 testing-off build 的 production
 archive 手动执行 `ar -t`、demangled `nm` 与 `strings` 检查。产品中不得存在 test

@@ -62,6 +62,9 @@ std::atomic<ShutdownResponseWriteObserver> response_write_observer{nullptr};
 /** @brief Installed post-Running execution observer, or null. */
 std::atomic<JobRunningObserver> job_running_observer{nullptr};
 
+/** @brief Installed post-reservation Session-create observer, or null. */
+std::atomic<SessionCreatePendingObserver> session_create_pending_observer{};
+
 /**
  * @brief Converts a valid fault point to its fixed array index.
  * @param point Instrumented boundary.
@@ -78,6 +81,7 @@ void reset_exception_fence_faults() noexcept {
   response_ready_observer.store(nullptr, std::memory_order_release);
   response_write_observer.store(nullptr, std::memory_order_release);
   job_running_observer.store(nullptr, std::memory_order_release);
+  session_create_pending_observer.store(nullptr, std::memory_order_release);
   for (FaultSlot& slot : fault_slots()) {
     slot.remaining.store(0U, std::memory_order_relaxed);
     slot.action.store(ExceptionFenceFaultAction::None,
@@ -98,10 +102,29 @@ void install_job_running_observer(JobRunningObserver observer) noexcept {
   job_running_observer.store(observer, std::memory_order_release);
 }
 
+/** @copydetails install_session_create_pending_observer */
+void install_session_create_pending_observer(
+    SessionCreatePendingObserver observer) noexcept {
+  session_create_pending_observer.store(observer, std::memory_order_release);
+}
+
 /** @copydetails observe_job_running */
 void observe_job_running() noexcept {
   const JobRunningObserver observer =
       job_running_observer.load(std::memory_order_acquire);
+  if (!observer) {
+    return;
+  }
+  try {
+    observer();
+  } catch (...) {
+  }
+}
+
+/** @copydetails observe_session_create_pending */
+void observe_session_create_pending() noexcept {
+  const SessionCreatePendingObserver observer =
+      session_create_pending_observer.load(std::memory_order_acquire);
   if (!observer) {
     return;
   }

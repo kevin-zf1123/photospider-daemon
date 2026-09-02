@@ -121,8 +121,122 @@ class JobRunningGate final {
   bool exited_ = false;
 };
 
+/**
+ * @brief Holds the first Session create after capacity reservation.
+ *
+ * @note Later creates pass immediately, allowing the test to prove that one
+ * pending compiler boundary neither holds lifecycle serialization nor becomes
+ * visible as an active Session.
+ */
+class PendingSessionCreateGate final {
+ public:
+  /**
+   * @brief Creates an idle gate that will hold the first observed create.
+   * @throws Nothing.
+   */
+  PendingSessionCreateGate() noexcept = default;
+
+  /**
+   * @brief Releases and drains an entered observer during failure cleanup.
+   * @throws Nothing.
+   */
+  ~PendingSessionCreateGate() noexcept {
+    try {
+      release();
+      std::unique_lock<std::mutex> lock(mutex_);
+      changed_.wait(lock, [this] { return !entered_ || exited_; });
+    } catch (...) {
+    }
+  }
+
+  /**
+   * @brief Forbids duplicating address-stable synchronization state.
+   * @param other Source gate that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateGate(const PendingSessionCreateGate& other) = delete;
+  /**
+   * @brief Forbids assigning address-stable synchronization state.
+   * @param other Source gate that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateGate& operator=(const PendingSessionCreateGate& other) =
+      delete;
+  /**
+   * @brief Forbids moving state borrowed by a process-global observer.
+   * @param other Source gate that cannot be moved.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateGate(PendingSessionCreateGate&& other) = delete;
+  /**
+   * @brief Forbids move-assigning borrowed synchronization state.
+   * @param other Source gate that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateGate& operator=(PendingSessionCreateGate&& other) =
+      delete;
+
+  /**
+   * @brief Blocks exactly the first post-reservation create boundary.
+   * @return No value.
+   * @throws std::system_error If test synchronization fails.
+   */
+  void hold_first() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (entered_) {
+      return;
+    }
+    entered_ = true;
+    changed_.notify_all();
+    changed_.wait(lock, [this] { return released_; });
+    exited_ = true;
+    changed_.notify_all();
+  }
+
+  /**
+   * @brief Waits for the first pending create to enter the observer.
+   * @param timeout Maximum bounded wait.
+   * @return True when entry is observed before the deadline.
+   * @throws std::system_error If test synchronization fails.
+   */
+  bool wait_until_entered(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, timeout, [this] { return entered_; });
+  }
+
+  /**
+   * @brief Releases the held pending create idempotently.
+   * @return No value.
+   * @throws std::system_error If test synchronization fails.
+   */
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+    changed_.notify_all();
+  }
+
+ private:
+  /** @brief Serializes deterministic gate state. */
+  std::mutex mutex_;
+  /** @brief Wakes the test and held create on state changes. */
+  std::condition_variable changed_;
+  /** @brief Whether the first pending create reached the observer. */
+  bool entered_ = false;
+  /** @brief Whether the held create may continue. */
+  bool released_ = false;
+  /** @brief Whether the held observer callback returned. */
+  bool exited_ = false;
+};
+
 /** @brief Borrowed active Running gate for one scoped regression. */
 std::atomic<JobRunningGate*> g_job_running_gate{nullptr};
+
+/** @brief Borrowed active pending-create gate for one scoped regression. */
+std::atomic<PendingSessionCreateGate*> g_pending_session_create_gate{nullptr};
 
 /**
  * @brief Bridges the noninstalled post-Running observer into its gate.
@@ -130,6 +244,19 @@ std::atomic<JobRunningGate*> g_job_running_gate{nullptr};
  */
 void hold_first_running_job() {
   JobRunningGate* gate = g_job_running_gate.load(std::memory_order_acquire);
+  if (gate) {
+    gate->hold_first();
+  }
+}
+
+/**
+ * @brief Bridges the noninstalled pending-create observer into its gate.
+ * @return No value.
+ * @throws Any test synchronization exception, fenced by the observer boundary.
+ */
+void hold_first_pending_session_create() {
+  PendingSessionCreateGate* gate =
+      g_pending_session_create_gate.load(std::memory_order_acquire);
   if (gate) {
     gate->hold_first();
   }
@@ -175,14 +302,74 @@ class JobRunningHookScope final {
   JobRunningHookScope& operator=(const JobRunningHookScope& other) = delete;
 };
 
+/** @brief Scoped installation of the noninstalled pending-create observer. */
+class PendingSessionCreateHookScope final {
+ public:
+  /**
+   * @brief Installs one borrowed deterministic pending-create gate.
+   * @param gate Nonnull gate that outlives this scope.
+   * @throws std::invalid_argument If gate is null.
+   */
+  explicit PendingSessionCreateHookScope(PendingSessionCreateGate* gate) {
+    if (!gate) {
+      throw std::invalid_argument(
+          "PendingSessionCreateHookScope requires a gate");
+    }
+    g_pending_session_create_gate.store(gate, std::memory_order_release);
+    ps::ipc::test::install_session_create_pending_observer(
+        &hold_first_pending_session_create);
+  }
+
+  /**
+   * @brief Clears the observer before the gate retires.
+   * @throws Nothing.
+   */
+  ~PendingSessionCreateHookScope() noexcept {
+    ps::ipc::test::install_session_create_pending_observer(nullptr);
+    g_pending_session_create_gate.store(nullptr, std::memory_order_release);
+  }
+
+  /**
+   * @brief Forbids duplicate process-global hook ownership.
+   * @param other Source scope that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateHookScope(const PendingSessionCreateHookScope& other) =
+      delete;
+  /**
+   * @brief Forbids assigning process-global hook ownership.
+   * @param other Source scope that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateHookScope& operator=(
+      const PendingSessionCreateHookScope& other) = delete;
+  /**
+   * @brief Forbids moving one process-global observer installation.
+   * @param other Source scope that cannot be moved.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateHookScope(PendingSessionCreateHookScope&& other) = delete;
+  /**
+   * @brief Forbids move-assigning process-global observer ownership.
+   * @param other Source scope that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  PendingSessionCreateHookScope& operator=(
+      PendingSessionCreateHookScope&& other) = delete;
+};
+
 /**
- * @brief Owns one async RPC whose cleanup first releases a Running gate.
+ * @brief Owns one async RPC whose cleanup first releases its deterministic
+ * gate.
  * @tparam T Complete RPC result type.
+ * @tparam Gate Address-stable gate type exposing idempotent `release()`.
  *
  * @note This guard prevents an early test return from blocking in
- * `std::future` destruction while the matching close still waits on the gate.
+ * `std::future` destruction while the matching RPC still waits on the gate.
  */
-template <typename T>
+template <typename T, typename Gate = JobRunningGate>
 class GateReleasingFuture final {
  public:
   /**
@@ -193,7 +380,7 @@ class GateReleasingFuture final {
    * @throws Any exception raised while launching the async task.
    */
   template <typename Function>
-  GateReleasingFuture(JobRunningGate* gate, Function&& function)
+  GateReleasingFuture(Gate* gate, Function&& function)
       : gate_(gate),
         future_(
             std::async(std::launch::async, std::forward<Function>(function))) {
@@ -250,7 +437,7 @@ class GateReleasingFuture final {
 
  private:
   /** @brief Borrowed gate released before unfinished wait cleanup. */
-  JobRunningGate* gate_;
+  Gate* gate_;
   /** @brief Sole asynchronous RPC result owner. */
   std::future<T> future_;
 };
@@ -716,6 +903,200 @@ void settle_handlers_and_trigger_reap(ps::ipc::internal::Server* server,
   wait_handler_count(server, 0U);
 }
 
+/**
+ * @brief Proves pending Session creation reserves only capacity, not locks or
+ * identity.
+ * @return Zero when capacity, lifecycle responsiveness, visibility, id order,
+ * and cleanup are exact.
+ * @throws std::bad_alloc If test/server/RPC staging allocation fails.
+ * @throws std::system_error If asynchronous or barrier synchronization fails.
+ * @note Coordination uses only the noninstalled post-reservation observer and
+ * bounded future waits; no elapsed sleep establishes a lifecycle state.
+ */
+int verify_pending_session_create_reservation() {
+  using ps::ErrorCode;
+  using ps::ipc::Client;
+  using ps::ipc::JobId;
+  using ps::ipc::SessionId;
+
+  const std::string path = socket_path();
+  internal::Server server(
+      internal::ServerConfig{path,
+                             internal::ServiceConfig{1U, 8U, 2U, false},
+                             32,
+                             32U,
+                             {},
+                             {}});
+  ps::ipc::test::ServerRunGuard server_run(&server);
+  Client observer;
+  Client create_a_client;
+  Client submit_b_client;
+  Client capacity_client;
+  Client close_b_client;
+  Client create_c_client;
+  PS_IPC_CHECK(observer.connect(path).ok());
+  PS_IPC_CHECK(create_a_client.connect(path).ok());
+  PS_IPC_CHECK(submit_b_client.connect(path).ok());
+  PS_IPC_CHECK(capacity_client.connect(path).ok());
+  PS_IPC_CHECK(close_b_client.connect(path).ok());
+  PS_IPC_CHECK(create_c_client.connect(path).ok());
+
+  auto session_b = observer.session_create(addition_document(1.0, 2.0));
+  PS_IPC_CHECK(session_b.ok());
+  PS_IPC_CHECK(session_b.value().value == 1U);
+
+  PendingSessionCreateGate pending_gate;
+  PendingSessionCreateHookScope pending_hook(&pending_gate);
+  GateReleasingFuture<ps::Result<SessionId>, PendingSessionCreateGate>
+      pending_a(&pending_gate, [&] {
+        return create_a_client.session_create(addition_document(3.0, 4.0));
+      });
+  PS_IPC_CHECK(pending_gate.wait_until_entered(kSessionCloseTimeout));
+
+  auto pending_info = observer.daemon_info();
+  PS_IPC_CHECK(pending_info.ok());
+  PS_IPC_CHECK(pending_info.value().active_sessions == 1U);
+  PS_IPC_CHECK(pending_info.value().maximum_sessions == 2U);
+
+  GateReleasingFuture<ps::Result<JobId>, PendingSessionCreateGate> submit_b(
+      &pending_gate,
+      [&] { return submit_b_client.job_submit(session_b.value()); });
+  PS_IPC_CHECK(submit_b.ready_within(kSessionCloseTimeout));
+  auto job_b = submit_b.get();
+  PS_IPC_CHECK(job_b.ok());
+
+  GateReleasingFuture<ps::Result<SessionId>, PendingSessionCreateGate>
+      at_capacity(&pending_gate, [&] {
+        return capacity_client.session_create(addition_document(5.0, 6.0));
+      });
+  PS_IPC_CHECK(at_capacity.ready_within(kSessionCloseTimeout));
+  auto rejected = at_capacity.get();
+  PS_IPC_CHECK(!rejected.ok());
+  PS_IPC_CHECK(rejected.status().code == ErrorCode::ResourceExhausted);
+
+  GateReleasingFuture<ps::Status, PendingSessionCreateGate> close_b(
+      &pending_gate,
+      [&] { return close_b_client.session_close(session_b.value()); });
+  PS_IPC_CHECK(close_b.ready_within(kSessionCloseTimeout));
+  PS_IPC_CHECK(close_b.get().ok());
+  auto removed_job = observer.job_status(job_b.value());
+  PS_IPC_CHECK(!removed_job.ok());
+  PS_IPC_CHECK(removed_job.status().code == ErrorCode::NotFound);
+
+  GateReleasingFuture<ps::Result<SessionId>, PendingSessionCreateGate> create_c(
+      &pending_gate, [&] {
+        return create_c_client.session_create(addition_document(7.0, 8.0));
+      });
+  PS_IPC_CHECK(create_c.ready_within(kSessionCloseTimeout));
+  auto session_c = create_c.get();
+  PS_IPC_CHECK(session_c.ok());
+  PS_IPC_CHECK(session_c.value().value == 2U);
+  auto c_info = observer.daemon_info();
+  PS_IPC_CHECK(c_info.ok());
+  PS_IPC_CHECK(c_info.value().active_sessions == 1U);
+
+  pending_gate.release();
+  PS_IPC_CHECK(pending_a.ready_within(kSessionCloseTimeout));
+  auto session_a = pending_a.get();
+  PS_IPC_CHECK(session_a.ok());
+  PS_IPC_CHECK(session_a.value().value == 3U);
+  auto published_info = observer.daemon_info();
+  PS_IPC_CHECK(published_info.ok());
+  PS_IPC_CHECK(published_info.value().active_sessions == 2U);
+
+  PS_IPC_CHECK(observer.session_close(session_c.value()).ok());
+  PS_IPC_CHECK(observer.session_close(session_a.value()).ok());
+  auto settled = observer.daemon_info();
+  PS_IPC_CHECK(settled.ok());
+  PS_IPC_CHECK(settled.value().active_sessions == 0U);
+  PS_IPC_CHECK(settled.value().active_jobs == 0U);
+  PS_IPC_CHECK(observer.daemon_shutdown().ok());
+  PS_IPC_CHECK(server_run.join().ok());
+  PS_IPC_CHECK(server.active_handler_count() == 0U);
+  PS_IPC_CHECK(server.retained_handler_count() == 0U);
+  return 0;
+}
+
+/**
+ * @brief Proves every pre-publication Session-create failure rolls back its
+ * reservation without consuming an identifier.
+ * @return Zero after compiler validation, injected candidate, publication,
+ * first-id, and final-capacity assertions pass.
+ * @throws std::bad_alloc If Service or request staging allocation fails.
+ * @note The publication fault fires immediately before the Session map
+ * insertion that may allocate; all controls exist only in the test runtime.
+ */
+int verify_session_create_failure_rollback() {
+  using ps::ErrorCode;
+
+  ps::ipc::test::reset_exception_fence_faults();
+  internal::Service service(internal::ServiceConfig{1U, 4U, 1U, false});
+  internal::Request create;
+  create.request_id = 401U;
+  create.method = internal::Method::SessionCreate;
+  create.document = compiler_invalid_document();
+  const internal::Response invalid = service.dispatch(create);
+  PS_IPC_CHECK(!invalid.status.ok());
+  PS_IPC_CHECK(invalid.status.code == ErrorCode::NotFound);
+  PS_IPC_CHECK(invalid.session_id.instance == 0U);
+  PS_IPC_CHECK(invalid.session_id.value == 0U);
+
+  ps::ipc::test::reset_exception_fence_faults();
+  ps::ipc::test::arm_exception_fence_fault(
+      ps::ipc::test::ExceptionFenceFaultPoint::SessionCreateCandidate,
+      ps::ipc::test::ExceptionFenceFaultAction::StandardException);
+  create.request_id = 402U;
+  create.document = addition_document(2.0, 3.0);
+  const internal::Response candidate_failure = service.dispatch(create);
+  PS_IPC_CHECK(!candidate_failure.status.ok());
+  PS_IPC_CHECK(candidate_failure.status.code == ErrorCode::Internal);
+  PS_IPC_CHECK(candidate_failure.session_id.instance == 0U);
+  PS_IPC_CHECK(candidate_failure.session_id.value == 0U);
+  PS_IPC_CHECK(
+      ps::ipc::test::exception_fence_fault_hits(
+          ps::ipc::test::ExceptionFenceFaultPoint::SessionCreateCandidate) ==
+      1U);
+
+  ps::ipc::test::reset_exception_fence_faults();
+  ps::ipc::test::arm_exception_fence_fault(
+      ps::ipc::test::ExceptionFenceFaultPoint::SessionCreatePublication,
+      ps::ipc::test::ExceptionFenceFaultAction::BadAlloc);
+  create.request_id = 403U;
+  const internal::Response publication_failure = service.dispatch(create);
+  PS_IPC_CHECK(!publication_failure.status.ok());
+  PS_IPC_CHECK(publication_failure.status.code == ErrorCode::ResourceExhausted);
+  PS_IPC_CHECK(publication_failure.session_id.instance == 0U);
+  PS_IPC_CHECK(publication_failure.session_id.value == 0U);
+  PS_IPC_CHECK(
+      ps::ipc::test::exception_fence_fault_hits(
+          ps::ipc::test::ExceptionFenceFaultPoint::SessionCreatePublication) ==
+      1U);
+
+  ps::ipc::test::reset_exception_fence_faults();
+  internal::Request info;
+  info.request_id = 404U;
+  info.method = internal::Method::DaemonInfo;
+  const internal::Response empty = service.dispatch(info);
+  PS_IPC_CHECK(empty.status.ok());
+  PS_IPC_CHECK(empty.daemon_info.active_sessions == 0U);
+  create.request_id = 405U;
+  const internal::Response first = service.dispatch(create);
+  PS_IPC_CHECK(first.status.ok());
+  PS_IPC_CHECK(first.session_id.value == 1U);
+  internal::Request close;
+  close.request_id = 406U;
+  close.method = internal::Method::SessionClose;
+  close.session_id = first.session_id;
+  PS_IPC_CHECK(service.dispatch(close).status.ok());
+  info.request_id = 407U;
+  const internal::Response settled = service.dispatch(info);
+  PS_IPC_CHECK(settled.status.ok());
+  PS_IPC_CHECK(settled.daemon_info.active_sessions == 0U);
+  PS_IPC_CHECK(settled.daemon_info.active_jobs == 0U);
+  ps::ipc::test::reset_exception_fence_faults();
+  return 0;
+}
+
 }  // namespace
 
 /**
@@ -733,6 +1114,9 @@ int main() {
   using ps::ipc::JobId;
   using ps::ipc::JobState;
   using ps::ipc::SessionId;
+
+  PS_IPC_CHECK(verify_session_create_failure_rollback() == 0);
+  PS_IPC_CHECK(verify_pending_session_create_reservation() == 0);
 
   for (internal::ServerConstructionStage stage :
        {internal::ServerConstructionStage::AfterListenerBind,
