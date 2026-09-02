@@ -21,7 +21,11 @@ sibling source target 或 private kernel include path。
   correlation；incomplete header 只使用 sentinel。Server 返回一个 typed failure 后关闭，
   且不产生 state mutation 或 declared-length allocation。
 - Session test 覆盖正值 `maximum_sessions`、无 allocation/无 id 的 backpressure、
-  close/reuse、精确 cleanup 与 concurrent admission。
+  close/reuse、精确 cleanup 与 concurrent admission。单 worker regression 会让
+  Session A 保持 Running、Session B 保持 Queued，随后证明关闭 B 在短 deadline 内完成、
+  A 仍为 Running、B 的 Job 被移除，且 Session capacity 可立即复用。其 timeout path
+  会先取消 A，再回收 close future，使失败快速清理；后续 daemon shutdown 不会保留一个
+  等待 A 自然 delay 的 close handler。
 - Server test 覆盖正值 active-handler bound、typed backpressure、顺序运行期 reaping、
   exception fencing、shutdown join，以及带 descriptor/node cleanup 与 same-path rebind 的
   deterministic post-bind construction failure。每个 asynchronous Server test 都使用

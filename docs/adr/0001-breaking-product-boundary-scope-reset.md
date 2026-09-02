@@ -46,13 +46,17 @@ sandbox, or resource-isolation boundary.
 
 `session.create` creates a fresh kernel `GraphContext` through the installed
 public API. `session.close` rejects new submission, cancels unfinished Jobs,
-waits for their bounded cleanup, releases all temporary results, and destroys
-the context. Daemon restart clears every Session.
+removes matching records still owned by the global queue, waits only for
+matching work already popped by a worker, releases all temporary results, and
+destroys the context. Queue removal synchronously completes the existing
+`Queued -> Running -> Cancelled` lifecycle; an unrelated Session's Running Job
+does not participate in the wait. Daemon restart clears every Session.
 
 Session retention has one positive process-global `maximum_sessions` bound.
 Admission checks capacity before constructing a graph/compiler or consuming an
 identifier; a full registry returns `ResourceExhausted`. Close releases exactly
-one slot, so later creation can reuse capacity without reusing an identifier.
+one slot after its own records settle, so later creation can reuse capacity
+without reusing an identifier or waiting for unrelated execution.
 
 ### Ephemeral Jobs
 

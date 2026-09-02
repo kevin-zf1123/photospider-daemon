@@ -126,9 +126,12 @@ Request 包含一个完整 WorkflowDocument。成功返回 fresh `SessionId`。S
 
 ### `session.close`
 
-Request 包含 `SessionId`。Close 原子地与新 submit 竞争，移除所有 matching Job
-record/result、请求 cancellation、等待 terminal settlement，再移除 Session 与 kernel
-context。后续 close 返回 `NotFound`。
+Request 包含 `SessionId`。Close 原子地与新 submit 竞争。它在 global registry lock
+下移除仍位于 worker queue 的 matching record，随后同步完成其既有
+`Queued -> Running -> Cancelled` 迁移。已被 worker pop 的 matching record 保留
+cooperative cancellation、stale-publication fence 与 terminal wait；无关 Session Job
+不参与该等待。最后 close 移除 Session/kernel context 并释放容量；后续 close 返回
+`NotFound`。
 
 ## Job
 
@@ -152,8 +155,9 @@ Observation 是 non-destructive。
 ### `job.cancel`
 
 对 terminal Job 的 cancellation 是 idempotent。Queued Job 记录 cooperative request，
-但仍先迁移到 `Running` 再到 `Cancelled`。Running callback 可以 drain，但 accepted
-cancellation 阻止 result publication。
+但仍先迁移到 `Running` 再到 `Cancelled`。Session close 可以在精确移除 queued
+ownership 后同步完成相同迁移。Running callback 可以 drain，但 accepted cancellation
+阻止 result publication。
 
 ### `job.result`
 
@@ -222,7 +226,8 @@ credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。P
 - state mutation 前完成 frame、version、enum、UTF-8、count、length、overflow 与
   trailing-data validation。
 - Session creation 在 registry publication 前 compile。
-- Session close 与 submit 原子竞争，并拒绝后续 result publication。
+- Session close 与 submit 原子竞争，精确移除 queued ownership，只等待自身已 pop work，
+  并拒绝后续 result publication。
 - Job state 单调，cancellation 后不能发布 success。
 - Worker/callback exception 被 fenced 到一个 Job failure。
 - descriptor、worker、GraphContext、result 与 queue ownership 恰好 settle 一次。

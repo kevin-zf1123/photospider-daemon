@@ -951,6 +951,77 @@ int main() {
     PS_IPC_CHECK(server_run.join().ok());
   }
 
+  {
+    // QueuedSessionCloseDoesNotWaitForUnrelatedRunningJob regression.
+    const std::string queued_close_path = socket_path();
+    internal::Server server(
+        internal::ServerConfig{queued_close_path,
+                               internal::ServiceConfig{1U, 2U, 2U, false},
+                               8,
+                               64U,
+                               {},
+                               {}});
+    ps::ipc::test::ServerRunGuard server_run(&server);
+    Client client;
+    Client close_client;
+    PS_IPC_CHECK(client.connect(queued_close_path).ok());
+    PS_IPC_CHECK(close_client.connect(queued_close_path).ok());
+    auto session_a = client.session_create(
+        delayed_document(kWorkerSaturationDelayMilliseconds));
+    auto session_b = client.session_create(
+        delayed_document(kWorkerSaturationDelayMilliseconds));
+    PS_IPC_CHECK(session_a.ok());
+    PS_IPC_CHECK(session_b.ok());
+    auto job_a = client.job_submit(session_a.value());
+    PS_IPC_CHECK(job_a.ok());
+    PS_IPC_CHECK(wait_state(&client, job_a.value(), JobState::Running).state ==
+                 JobState::Running);
+    auto job_b = client.job_submit(session_b.value());
+    PS_IPC_CHECK(job_b.ok());
+    PS_IPC_CHECK(wait_state(&client, job_b.value(), JobState::Queued).state ==
+                 JobState::Queued);
+
+    auto close_future = std::async(std::launch::async, [&] {
+      return close_client.session_close(session_b.value());
+    });
+    const bool queued_close_completed =
+        close_future.wait_for(kSessionCloseTimeout) ==
+        std::future_status::ready;
+    if (!queued_close_completed) {
+      static_cast<void>(client.job_cancel(job_a.value()));
+    }
+    auto queued_close = close_future.get();
+    PS_IPC_CHECK(queued_close_completed);
+    PS_IPC_CHECK(queued_close.ok());
+
+    auto surviving_a = client.job_status(job_a.value());
+    PS_IPC_CHECK(surviving_a.ok());
+    PS_IPC_CHECK(surviving_a.value().state == JobState::Running);
+    auto missing_b_status = client.job_status(job_b.value());
+    auto missing_b_result = client.job_result(job_b.value());
+    PS_IPC_CHECK(!missing_b_status.ok());
+    PS_IPC_CHECK(missing_b_status.status().code == ErrorCode::NotFound);
+    PS_IPC_CHECK(!missing_b_result.ok());
+    PS_IPC_CHECK(missing_b_result.status().code == ErrorCode::NotFound);
+
+    auto reused_session = client.session_create(addition_document(3.0, 4.0));
+    PS_IPC_CHECK(reused_session.ok());
+    PS_IPC_CHECK(reused_session.value().value != session_b.value().value);
+    PS_IPC_CHECK(client.session_close(reused_session.value()).ok());
+
+    PS_IPC_CHECK(client.job_cancel(job_a.value()).ok());
+    PS_IPC_CHECK(wait_terminal(&client, job_a.value()).state ==
+                 JobState::Cancelled);
+    PS_IPC_CHECK(client.session_close(session_a.value()).ok());
+    auto released = client.daemon_info();
+    PS_IPC_CHECK(released.ok());
+    PS_IPC_CHECK(released.value().active_sessions == 0U);
+    PS_IPC_CHECK(released.value().active_jobs == 0U);
+    PS_IPC_CHECK(client.daemon_shutdown().ok());
+    PS_IPC_CHECK(server_run.ready_within(kSessionCloseTimeout));
+    PS_IPC_CHECK(server_run.join().ok());
+  }
+
   const std::string path = socket_path();
   SessionId old_session;
   JobId old_job;

@@ -21,6 +21,11 @@ are ephemeral and use exactly:
 Queued -> Running -> Succeeded | Failed | Cancelled
 ```
 
+`session.close` removes matching work still owned by the global queue and
+completes its existing state transitions locally. It cooperatively cancels and
+waits only for matching work already popped by a worker; an unrelated
+Session's Running Job never delays close or Session-capacity reuse.
+
 Restart clears every Session, Job, and result. There is no automatic retry,
 attempt identity, checkpoint, recovery, durable result, receipt, tenant, or
 remote service.

@@ -92,7 +92,7 @@ struct SessionRecord final {
 struct JobRecord final {
   /** @brief Serializes lifecycle, outcome, and result publication. */
   mutable std::mutex mutex;
-  /** @brief Wakes namespace close after a terminal transition. */
+  /** @brief Wakes namespace close after worker or queued-close termination. */
   std::condition_variable terminal_changed;
   /** @brief Immutable ephemeral execution identifier. */
   JobId id;
@@ -352,15 +352,38 @@ class JobRegistry final {
   /**
    * @brief Cancels and removes every execution for one closing namespace.
    * @param session_id Namespace being closed.
-   * @throws std::bad_alloc If the closing-record snapshot allocation fails.
-   * @note Workers may finish against off-registry records but cannot republish
-   * a caller-visible result after removal.
+   * @throws std::bad_alloc If queued/running snapshot allocation fails before
+   * any queue or map mutation.
+   * @note The registry mutex is the linearization boundary between records
+   * still owned by `queue_` and records already popped by a worker. Queued
+   * records are removed from both containers and synchronously complete
+   * `Queued -> Running -> Cancelled`; only popped/running records require
+   * cooperative cancellation and a terminal wait. Record mutexes are never
+   * acquired while the registry mutex is held.
    */
   void close_session(SessionId session_id) {
-    std::vector<std::shared_ptr<JobRecord>> closing;
+    std::vector<std::shared_ptr<JobRecord>> queued;
+    std::vector<std::shared_ptr<JobRecord>> running;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      closing.reserve(jobs_.size());
+      queued.reserve(queue_.size());
+      running.reserve(jobs_.size());
+      for (auto iterator = queue_.begin(); iterator != queue_.end();) {
+        const auto& record = *iterator;
+        if (record->session_id.instance != session_id.instance ||
+            record->session_id.value != session_id.value) {
+          ++iterator;
+          continue;
+        }
+        queued.push_back(record);
+        iterator = queue_.erase(iterator);
+      }
+      for (const auto& record : queued) {
+        const auto iterator = jobs_.find(record->id.value);
+        if (iterator != jobs_.end() && iterator->second == record) {
+          jobs_.erase(iterator);
+        }
+      }
       for (auto iterator = jobs_.begin(); iterator != jobs_.end();) {
         const auto& record = iterator->second;
         if (record->session_id.instance != session_id.instance ||
@@ -368,12 +391,25 @@ class JobRegistry final {
           ++iterator;
           continue;
         }
-        record->cancellation.cancel();
-        closing.push_back(record);
+        running.push_back(record);
         iterator = jobs_.erase(iterator);
       }
     }
-    for (const auto& record : closing) {
+
+    for (const auto& record : queued) {
+      static_cast<void>(record->cancellation.cancel());
+      std::lock_guard<std::mutex> record_lock(record->mutex);
+      record->result.reset();
+      record->state = JobState::Running;
+      record->outcome.code = ErrorCode::Cancelled;
+      record->outcome.message.clear();
+      record->state = JobState::Cancelled;
+      record->terminal_changed.notify_all();
+    }
+    for (const auto& record : running) {
+      static_cast<void>(record->cancellation.cancel());
+    }
+    for (const auto& record : running) {
       std::unique_lock<std::mutex> record_lock(record->mutex);
       record->result.reset();
       record->terminal_changed.wait(
@@ -702,7 +738,9 @@ struct Service::Impl final {
    * @param id Exact process-scoped namespace identifier.
    * @return Success or `NotFound` for stale/missing identity.
    * @throws std::bad_alloc If closing-record snapshot allocation fails.
-   * @note All owned executions are cancelled, awaited, and removed first.
+   * @note Queued executions are removed and synchronously cancelled; popped
+   * or running executions are cooperatively cancelled and awaited. Unrelated
+   * namespace work never participates in this close wait.
    */
   Status close_session(SessionId id) {
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);

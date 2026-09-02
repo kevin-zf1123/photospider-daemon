@@ -45,8 +45,9 @@ struct JobId final {
  * @brief Exact forward-only lifecycle of one ephemeral execution.
  *
  * @note Permitted transitions are exactly Queued to Running to one terminal
- * state. A queued cancellation is observed immediately after dispatch enters
- * Running.
+ * state. `job.cancel` on queued work is observed after worker dispatch enters
+ * Running. Session close may perform the same transitions synchronously after
+ * it removes the record from the worker queue.
  */
 enum class JobState : std::uint8_t {
   Queued = 1U,
