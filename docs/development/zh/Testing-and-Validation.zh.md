@@ -53,15 +53,22 @@ sibling source target 或 private kernel include path。
   Running 后发送 `SIGTERM`，并调用 `daemon.shutdown`。它们要求有界 `exit(0)`、
   generation-checked socket removal，以及在 delayed operation 自然结束前完成
   cancellation/join。
-- Installed-consumer test 证明 `bin/photospiderd` 已安装，同时 CMake export set 只含
-  `PhotospiderDaemon::client`。专用 `BUILD_SHARED_LIBS=ON` package gate 还证明该
-  target 保持为可用 static archive，且不创建 shared client ABI。
+- Installed-consumer test 证明 portable `bin/photospiderd` 已安装，同时 CMake export
+  set 只含 `PhotospiderDaemon::client`。它会清除 Linux/Darwin loader-path environment
+  variable 并执行 installed runtime 的 `--help`，不把 file existence 当作 runtime
+  evidence。Local package check 覆盖 static/shared kernel 的 same/separate prefix；CI 在
+  Ubuntu 与 macOS 上运行 separate-prefix static/shared matrix。Shared-kernel inspection
+  要求 Linux RPATH/RUNPATH 或 Darwin `LC_RPATH` 同时包含 loader-relative daemon libdir
+  与实际 non-system imported kernel directory。Client 继续是不受 `BUILD_SHARED_LIBS`
+  影响的 static archive，不创建 shared client ABI。
 
 Nested package consumer 暴露 generator-aware 的
 `run_photospider_daemon_consumer` target，其 command 使用 executable target-file
 expression。Outer gate 会传递精确 generator、存在时的 platform/toolset 与 active
 configuration，随后 build 该 run target。因此 single-config 与 multi-config layout
 都不需要猜测 build root、configuration directory、executable suffix 或 bundle path。
+Outer installed-runtime check 同样接收 configured bindir、libdir 与 executable suffix，
+不会硬编码 host layout。
 
 ## 产品与 test runtime 分离
 

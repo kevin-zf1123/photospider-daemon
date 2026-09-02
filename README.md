@@ -65,6 +65,15 @@ The daemon configure must fail if it can see only a source checkout or private
 kernel headers. Tests use the public compile/execute/Value facade exported by
 the installed package.
 
+On Linux and Darwin, the installed `photospiderd` carries a portable
+loader-relative search path to `../${CMAKE_INSTALL_LIBDIR}` and, when the
+imported kernel is shared in a separate prefix, the actual non-system linked
+kernel directory. Linux uses `$ORIGIN`; Darwin uses `@loader_path`. Windows
+sets no RPATH. The installed-consumer gate clears `LD_LIBRARY_PATH`,
+`DYLD_LIBRARY_PATH`, and `DYLD_FALLBACK_LIBRARY_PATH` before it executes the
+installed runtime's `--help`, so a shared kernel cannot pass through ambient
+developer loader state.
+
 The executable accepts positive `--max-sessions`, `--max-jobs`,
 `--max-concurrency`, and `--max-connections` bounds. Capacity rejection is a
 typed `ResourceExhausted` response and creates no Session, Job, or handler

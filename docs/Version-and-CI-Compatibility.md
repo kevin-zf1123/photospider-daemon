@@ -18,9 +18,12 @@ Daemon CI:
 
 1. checks out the matching kernel feature branch when present, otherwise
    kernel main, in a separate directory;
-2. configures, builds, and installs the kernel to a fresh prefix;
+2. configures, builds, and installs both static and shared kernels to a fresh
+   prefix on Ubuntu and macOS;
 3. configures the daemon using only that prefix;
-4. builds, runs CTest, installs, and runs an external typed-client consumer;
+4. builds, runs CTest, installs, runs an external typed-client consumer, and
+   executes the installed `photospiderd --help` with every supported loader
+   environment override removed;
 5. runs binary-codec, socket ownership/SIGPIPE, real-process signal and RPC
    shutdown, Session/Job/cancellation/result/restart, executable-help, and
    installed-client tests; and
@@ -28,10 +31,15 @@ Daemon CI:
    the same installed-kernel boundary, with deterministic test teardown and
    per-test timeout protection.
 
-The installed-client gate also proves that `bin/photospiderd` exists while the
-generated export set contains exactly `PhotospiderDaemon::client` and no
-executable/server target. The long-lived frame/codec fuzz target is a manual
-developer target, not a default build, CTest, or migration-residue gate.
+The installed-client gate also proves that the portable bindir executable
+actually starts while the generated export set contains exactly
+`PhotospiderDaemon::client` and no executable/server target. For a shared
+kernel in the separate isolated prefix, Linux `$ORIGIN` or Darwin
+`@loader_path` preserves the same-prefix layout and the non-system imported
+link directory preserves the separate-prefix layout. Windows defines no RPATH.
+Sanitizer jobs remain focused static-kernel jobs rather than multiplying this
+package matrix. The long-lived frame/codec fuzz target is a manual developer
+target, not a default build, CTest, or migration-residue gate.
 
 No job builds an archived kernel or executes old/new wire combinations. There
 is no frozen four-cell gate.

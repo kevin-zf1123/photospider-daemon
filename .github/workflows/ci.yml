@@ -6,10 +6,12 @@ on:
 
 jobs:
   installed-kernel-build-test:
+    name: installed-kernel (${{ matrix.os }}, shared=${{ matrix.kernel_shared }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        kernel_shared: ["OFF", "ON"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -31,6 +33,7 @@ jobs:
           cmake -S "$RUNNER_TEMP/kernel" -B "$RUNNER_TEMP/kernel-build" -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/kernel-prefix" \
+            -DBUILD_SHARED_LIBS="${{ matrix.kernel_shared }}" \
             -DBUILD_TESTING=OFF
           cmake --build "$RUNNER_TEMP/kernel-build" --parallel
           cmake --install "$RUNNER_TEMP/kernel-build"
