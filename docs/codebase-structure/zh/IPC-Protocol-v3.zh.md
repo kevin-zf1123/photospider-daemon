@@ -158,7 +158,9 @@ matching record 保留 cooperative cancellation、stale-publication fence 与 te
 无关 Session Job 不参与该等待，无关 Session 的 create、submit 与 close 仍可响应。
 Snapshot allocation failure 发生在所有 Job mutation 前，并会清除 closing 以允许 caller
 retry。成功 settle 后，close 重新取得 lifecycle ownership，移除 Session/kernel context
-并释放 capacity。
+并释放 capacity。删除 terminal Job 时只移除其 registry reference，不会 reset 已发布的
+state、outcome 或 result：已经保留 shared record 的 result handler 会完成一份 coherent
+snapshot，erase 后才开始的每个 lookup 都返回 `NotFound`。
 
 ## Job
 
@@ -189,12 +191,17 @@ ownership 后同步完成相同迁移。Running callback 可以 drain，但 acce
 ### `job.result`
 
 只有 `Succeeded` 返回 copied temporary in-memory result。Queued/Running 返回
-`InvalidArgument`；Failed/Cancelled 返回 terminal failure。
+`InvalidArgument`；Failed/Cancelled 返回 terminal failure。成功 registry lookup 会在取得
+record mutex 前保留 shared ownership。并发 release 或 Session close 可以删除 registry
+reference 并释放 logical Job capacity，但不能清除该 retained terminal snapshot。旧 reader
+完成 result deep-copy；physical record/result storage 会在最后一个 worker/handler/shared
+owner 释放后 retire。正值 active-handler bound 同时限制这段宽限期内的 reader 数量。
 
 ### `job.release`
 
-只有 terminal Job 可 release。成功会删除完整 record 与 temporary result。后续
-status/result/release 返回 `NotFound`。
+只有 terminal Job 可 release。成功会验证 terminal state，并在不修改 record 的情况下删除
+registry reference。后续 status/result/release 返回 `NotFound`；已经完成 find 的 reader
+仍可在自然析构前完成 immutable terminal snapshot。
 
 Caller 只能通过 `job.submit` retry，并获得 distinct identifier。
 
@@ -267,6 +274,10 @@ credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。P
   result publication。Pre-mutation snapshot failure 会重新打开 Session；成功 settle 后
   erase，并只通过 fresh id 复用 capacity。
 - Job state 单调，cancellation 后不能发布 success。
+- Release 与 Session close 删除 terminal registry reference 时不清除已发布的
+  state/outcome/result。已经完成 lookup 的 reader 拥有 coherent deep-copy source；fresh
+  lookup 返回 `NotFound`，logical capacity 在 erase 时释放，physical storage 随最后一个
+  shared owner retire。
 - Service dispatch exception 会保留 request correlation、清空所有 success-only payload
   与 `shutdown_after_write`，并产生一个 typed failure。Standard exception 的 diagnostic
   是 nullable borrowed pointer；null 会在受保护的 failure-Status construction 内规范化

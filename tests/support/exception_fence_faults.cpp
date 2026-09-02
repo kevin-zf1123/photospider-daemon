@@ -73,6 +73,30 @@ std::atomic<ShutdownResponseWriteObserver> response_write_observer{nullptr};
 /** @brief Installed post-Running execution observer, or null. */
 std::atomic<JobRunningObserver> job_running_observer{nullptr};
 
+/** @brief Installed filtered Job-result after-find observer, or null. */
+std::atomic<JobResultAfterFindObserver> job_result_after_find_observer{nullptr};
+
+/** @brief Instance half of the one-shot Job-result observer filter. */
+std::atomic<std::uint64_t> job_result_filter_instance{0U};
+
+/** @brief Value half of the one-shot Job-result observer filter. */
+std::atomic<std::uint64_t> job_result_filter_value{0U};
+
+/** @brief One while the filtered Job-result observer may still fire. */
+std::atomic<std::uint32_t> job_result_after_find_remaining{0U};
+
+/** @brief Installed filtered JobRecord-retirement observer, or null. */
+std::atomic<JobRecordRetirementObserver> job_retirement_observer{nullptr};
+
+/** @brief Instance half of the JobRecord-retirement filter. */
+std::atomic<std::uint64_t> job_retirement_filter_instance{0U};
+
+/** @brief Value half of the JobRecord-retirement filter. */
+std::atomic<std::uint64_t> job_retirement_filter_value{0U};
+
+/** @brief Exact matching JobRecord retirements since installation/reset. */
+std::atomic<std::uint32_t> job_record_retirements{0U};
+
 /** @brief Installed post-reservation Session-create observer, or null. */
 std::atomic<SessionCreatePendingObserver> session_create_pending_observer{};
 
@@ -86,12 +110,37 @@ std::size_t fault_index(ExceptionFenceFaultPoint point) noexcept {
   return static_cast<std::size_t>(point);
 }
 
+/**
+ * @brief Compares one JobId with an atomically published fixed filter.
+ * @param id Candidate process-scoped JobId.
+ * @param instance Installed instance-half storage.
+ * @param value Installed value-half storage.
+ * @return True only when both nonzero halves match exactly.
+ * @throws Nothing.
+ * @note Install/clear operations are externally serialized with observed
+ * handlers, so two relaxed component loads form one stable test filter.
+ */
+bool matches_job_filter(JobId id, const std::atomic<std::uint64_t>& instance,
+                        const std::atomic<std::uint64_t>& value) noexcept {
+  return id.instance != 0U && id.value != 0U &&
+         instance.load(std::memory_order_relaxed) == id.instance &&
+         value.load(std::memory_order_relaxed) == id.value;
+}
+
 }  // namespace
 
 void reset_exception_fence_faults() noexcept {
   response_ready_observer.store(nullptr, std::memory_order_release);
   response_write_observer.store(nullptr, std::memory_order_release);
   job_running_observer.store(nullptr, std::memory_order_release);
+  job_result_after_find_remaining.store(0U, std::memory_order_release);
+  job_result_after_find_observer.store(nullptr, std::memory_order_release);
+  job_result_filter_instance.store(0U, std::memory_order_relaxed);
+  job_result_filter_value.store(0U, std::memory_order_relaxed);
+  job_retirement_observer.store(nullptr, std::memory_order_release);
+  job_retirement_filter_instance.store(0U, std::memory_order_relaxed);
+  job_retirement_filter_value.store(0U, std::memory_order_relaxed);
+  job_record_retirements.store(0U, std::memory_order_relaxed);
   session_create_pending_observer.store(nullptr, std::memory_order_release);
   for (FaultSlot& slot : fault_slots()) {
     slot.remaining.store(0U, std::memory_order_relaxed);
@@ -113,6 +162,31 @@ void install_job_running_observer(JobRunningObserver observer) noexcept {
   job_running_observer.store(observer, std::memory_order_release);
 }
 
+/** @copydetails install_job_result_after_find_observer */
+void install_job_result_after_find_observer(
+    JobId id, JobResultAfterFindObserver observer) noexcept {
+  job_result_after_find_remaining.store(0U, std::memory_order_relaxed);
+  job_result_after_find_observer.store(observer, std::memory_order_relaxed);
+  job_result_filter_instance.store(observer ? id.instance : 0U,
+                                   std::memory_order_relaxed);
+  job_result_filter_value.store(observer ? id.value : 0U,
+                                std::memory_order_relaxed);
+  job_result_after_find_remaining.store(observer ? 1U : 0U,
+                                        std::memory_order_release);
+}
+
+/** @copydetails install_job_record_retirement_observer */
+void install_job_record_retirement_observer(
+    JobId id, JobRecordRetirementObserver observer) noexcept {
+  job_retirement_observer.store(nullptr, std::memory_order_relaxed);
+  job_retirement_filter_instance.store(observer ? id.instance : 0U,
+                                       std::memory_order_relaxed);
+  job_retirement_filter_value.store(observer ? id.value : 0U,
+                                    std::memory_order_relaxed);
+  job_record_retirements.store(0U, std::memory_order_relaxed);
+  job_retirement_observer.store(observer, std::memory_order_release);
+}
+
 /** @copydetails install_session_create_pending_observer */
 void install_session_create_pending_observer(
     SessionCreatePendingObserver observer) noexcept {
@@ -130,6 +204,43 @@ void observe_job_running() noexcept {
     observer();
   } catch (...) {
   }
+}
+
+/** @copydetails observe_job_result_after_find */
+void observe_job_result_after_find(JobId id) noexcept {
+  if (!matches_job_filter(id, job_result_filter_instance,
+                          job_result_filter_value)) {
+    return;
+  }
+  std::uint32_t expected = 1U;
+  if (!job_result_after_find_remaining.compare_exchange_strong(
+          expected, 0U, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    return;
+  }
+  const JobResultAfterFindObserver observer =
+      job_result_after_find_observer.load(std::memory_order_acquire);
+  if (!observer) {
+    return;
+  }
+  try {
+    observer(id);
+  } catch (...) {
+  }
+}
+
+/** @copydetails observe_job_record_retirement */
+void observe_job_record_retirement(JobId id) noexcept {
+  if (!matches_job_filter(id, job_retirement_filter_instance,
+                          job_retirement_filter_value)) {
+    return;
+  }
+  const JobRecordRetirementObserver observer =
+      job_retirement_observer.load(std::memory_order_acquire);
+  if (!observer) {
+    return;
+  }
+  job_record_retirements.fetch_add(1U, std::memory_order_acq_rel);
+  observer(id);
 }
 
 /** @copydetails observe_session_create_pending */
@@ -205,6 +316,14 @@ std::uint32_t exception_fence_fault_hits(
   const std::size_t index = fault_index(point);
   return index < kFaultPointCount
              ? fault_slots()[index].hits.load(std::memory_order_acquire)
+             : 0U;
+}
+
+/** @copydetails job_record_retirement_count */
+std::uint32_t job_record_retirement_count(JobId id) noexcept {
+  return matches_job_filter(id, job_retirement_filter_instance,
+                            job_retirement_filter_value)
+             ? job_record_retirements.load(std::memory_order_acquire)
              : 0U;
 }
 

@@ -47,10 +47,12 @@ sandbox, or resource-isolation boundary.
 `session.create` creates a fresh kernel `GraphContext` through the installed
 public API. `session.close` rejects new submission, cancels unfinished Jobs,
 removes matching records still owned by the global queue, waits only for
-matching work already popped by a worker, releases all temporary results, and
-destroys the context. Queue removal synchronously completes the existing
+matching work already popped by a worker, erases every Job registry reference,
+and destroys the context. Queue removal synchronously completes the existing
 `Queued -> Running -> Cancelled` lifecycle; an unrelated Session's Running Job
-does not participate in the wait. Daemon restart clears every Session.
+does not participate in the wait. An already-found result reader retains its
+immutable terminal record until its exact snapshot completes; no new lookup can
+observe it. Daemon restart clears every Session.
 
 Session retention has one positive process-global `maximum_sessions` bound.
 Admission briefly holds `lifecycle_mutex -> sessions_mutex` to reserve capacity
@@ -78,8 +80,10 @@ Queued -> Running -> Succeeded | Failed | Cancelled
 A terminal state is immutable. Cancellation is cooperative and best-effort;
 the daemon forwards it to the kernel cancellation source and rejects any stale
 completion or result publication after cancellation or Session close. Calling
-`job.release` removes the terminal record and temporary result. Ordinary
-process-global concurrency limits and backpressure are allowed.
+`job.release` removes the terminal record from registry visibility without
+mutating a snapshot already retained by an in-flight reader; physical result
+storage retires with the last shared record owner. Ordinary process-global
+concurrency limits and backpressure are allowed.
 
 The worker exception fence accepts a nullable borrowed diagnostic pointer and
 constructs every owned string and `Status` inside its protected block. A null
@@ -145,11 +149,14 @@ valid only for a failed protocol-error response.
 
 ### Result lifetime
 
-A successful Job owns an in-memory public kernel result until `job.release`,
-Session close, bounded terminal eviction, or daemon shutdown. `job.result`
-returns a typed public value encoding. Results have no durable artifact
-identity, filesystem publication protocol, lease, receipt, retention promise,
-or recovery behavior.
+A successful Job owns an in-memory public kernel result while its registry
+record is visible. `job.release`, Session close, bounded terminal eviction, or
+daemon shutdown erases that registry ownership and makes fresh lookups
+`NotFound`; a reader that already retained the shared record may finish one
+coherent `job.result` snapshot before the last owner naturally destroys the
+result. `job.result` returns a typed public value encoding. Results have no
+durable artifact identity, filesystem publication protocol, lease, receipt,
+retention promise, or recovery behavior.
 
 ### Shutdown and restart
 

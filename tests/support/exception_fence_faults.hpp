@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "photospider/ipc/protocol.hpp"
+
 namespace ps {
 struct Status;
 }
@@ -18,6 +20,27 @@ using ShutdownResponseWriteObserver = void (*)(bool accepted_shutdown,
 /** @brief Test-only observer after a Job publishes Running before compilation.
  */
 using JobRunningObserver = void (*)();
+
+/**
+ * @brief Test-only observer after a successful Job-result find and before the
+ * record mutex.
+ * @param id Exact filtered JobId whose shared record has been retained.
+ * @return No value.
+ * @throws Any exception raised by test synchronization; the invocation seam
+ * fences it so the result handler remains exception-safe.
+ * @note The controller invokes this observer at most once for its installed
+ * JobId and exists only in the noninstalled test runtime.
+ */
+using JobResultAfterFindObserver = void (*)(JobId id);
+
+/**
+ * @brief Test-only no-throw observer when one filtered JobRecord retires.
+ * @param id Exact retired JobId.
+ * @return No value.
+ * @throws Nothing by function type contract.
+ * @note The fixed controller also counts matching retirement before callback.
+ */
+using JobRecordRetirementObserver = void (*)(JobId id) noexcept;
 
 /**
  * @brief Test-only observer after Session-create capacity reservation.
@@ -117,6 +140,32 @@ void install_shutdown_response_observers(
 void install_job_running_observer(JobRunningObserver observer) noexcept;
 
 /**
+ * @brief Installs or clears one filtered, one-shot Job-result after-find seam.
+ * @param id Exact JobId to observe; ignored when `observer` is null.
+ * @param observer Callback after successful find and before record locking, or
+ * null to clear.
+ * @return No value.
+ * @throws Nothing.
+ * @note Install after submit and before starting the target result request.
+ * Reconfiguration is valid only after the prior observed handler exits.
+ */
+void install_job_result_after_find_observer(
+    JobId id, JobResultAfterFindObserver observer) noexcept;
+
+/**
+ * @brief Installs or clears one filtered JobRecord-retirement observer/counter.
+ * @param id Exact JobId whose final shared-owner release is observed.
+ * @param observer No-throw callback after the matching count increments, or
+ * null to clear.
+ * @return No value.
+ * @throws Nothing.
+ * @note The controller is allocation-free and exists only in the noninstalled
+ * test runtime.
+ */
+void install_job_record_retirement_observer(
+    JobId id, JobRecordRetirementObserver observer) noexcept;
+
+/**
  * @brief Installs or clears the pending Session-create observer.
  * @param observer Callback after capacity reservation, or null to clear.
  * @return No value.
@@ -134,6 +183,24 @@ void install_session_create_pending_observer(
  * @note Production orchestration objects contain no corresponding callback.
  */
 void observe_job_running() noexcept;
+
+/**
+ * @brief Invokes the installed one-shot observer for a matching retained Job.
+ * @param id JobId whose `find()` just returned shared ownership.
+ * @return No value.
+ * @throws Nothing; every observer exception is fenced.
+ * @note The production runtime has no corresponding call or controller.
+ */
+void observe_job_result_after_find(JobId id) noexcept;
+
+/**
+ * @brief Counts and reports retirement of one matching JobRecord.
+ * @param id JobId owned by the retiring record.
+ * @return No value.
+ * @throws Nothing.
+ * @note Invocation occurs only from the noninstalled test-runtime destructor.
+ */
+void observe_job_record_retirement(JobId id) noexcept;
 
 /**
  * @brief Invokes the installed pending Session-create observer.
@@ -184,5 +251,15 @@ void hit_exception_fence_fault(ExceptionFenceFaultPoint point);
  */
 [[nodiscard]] std::uint32_t exception_fence_fault_hits(
     ExceptionFenceFaultPoint point) noexcept;
+
+/**
+ * @brief Returns the exact matching JobRecord retirement count.
+ * @param id Installed filter identity.
+ * @return Count since installation/reset, or zero for another identity.
+ * @throws Nothing.
+ * @note A count of one proves every registry/handler/worker shared owner has
+ * released the single record.
+ */
+[[nodiscard]] std::uint32_t job_record_retirement_count(JobId id) noexcept;
 
 }  // namespace ps::ipc::test
