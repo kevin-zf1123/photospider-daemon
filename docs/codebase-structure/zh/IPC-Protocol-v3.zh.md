@@ -145,12 +145,15 @@ Request 包含一个完整 WorkflowDocument。成功返回 fresh `SessionId`。S
 
 ### `session.close`
 
-Request 包含 `SessionId`。Close 原子地与新 submit 竞争。它在 global registry lock
-下移除仍位于 worker queue 的 matching record，随后同步完成其既有
-`Queued -> Running -> Cancelled` 迁移。已被 worker pop 的 matching record 保留
-cooperative cancellation、stale-publication fence 与 terminal wait；无关 Session Job
-不参与该等待。最后 close 移除 Session/kernel context 并释放容量；后续 close 返回
-`NotFound`。
+Request 包含 `SessionId`。Close 会原子地把 open record 标记为 closing，并与新 submit
+竞争；此后 submit 与 repeated close 返回 `NotFound`，retained record 则继续占用 Session
+capacity。Process-wide lifecycle lock 会在 Job registry 移除 matching queue-owned record
+并同步完成其既有 `Queued -> Running -> Cancelled` 迁移前释放。已被 worker pop 的
+matching record 保留 cooperative cancellation、stale-publication fence 与 terminal wait；
+无关 Session Job 不参与该等待，无关 Session 的 create、submit 与 close 仍可响应。
+Snapshot allocation failure 发生在所有 Job mutation 前，并会清除 closing 以允许 caller
+retry。成功 settle 后，close 重新取得 lifecycle ownership，移除 Session/kernel context
+并释放 capacity。
 
 ## Job
 
@@ -251,8 +254,10 @@ credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。P
 - state mutation 前完成 frame、version、enum、UTF-8、count、length、overflow 与
   trailing-data validation。
 - Session creation 在 registry publication 前 compile。
-- Session close 与 submit 原子竞争，精确移除 queued ownership，只等待自身已 pop work，
-  并拒绝后续 result publication。
+- Session close 与 submit 原子竞争，在标记 closing 期间保持占用 capacity，等待自身已
+  pop work 前释放 global lifecycle serialization，精确移除 queued ownership，并拒绝后续
+  result publication。Pre-mutation snapshot failure 会重新打开 Session；成功 settle 后
+  erase，并只通过 fresh id 复用 capacity。
 - Job state 单调，cancellation 后不能发布 success。
 - Worker/callback exception 被 fenced 到一个 Job failure。
 - descriptor、worker、GraphContext、result 与 queue ownership 恰好 settle 一次。

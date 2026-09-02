@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <exception>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -80,12 +81,19 @@ void fail_response_without_allocation(Response& response,
   response.shutdown_after_write = false;
 }
 
-/** @brief Immutable namespace record owning one kernel GraphContext. */
+/** @brief Namespace record owning one kernel GraphContext and close state. */
 struct SessionRecord final {
   /** @brief Ephemeral namespace identifier. */
   SessionId id;
   /** @brief Independently owned immutable source graph. */
   std::shared_ptr<GraphContext> graph;
+  /**
+   * @brief True after close wins admission and until final registry erasure.
+   * @note Read/write requires `lifecycle_mutex` followed by `sessions_mutex`.
+   * A closing record continues to consume Session capacity and rejects submit
+   * and repeated close as `NotFound` while its popped Jobs drain.
+   */
+  bool closing = false;
 };
 
 /** @brief Synchronized state for one queued/running/terminal execution. */
@@ -358,7 +366,9 @@ class JobRegistry final {
    * still owned by `queue_` and records already popped by a worker. Queued
    * records are removed from both containers and synchronously complete
    * `Queued -> Running -> Cancelled`; only popped/running records require
-   * cooperative cancellation and a terminal wait. Record mutexes are never
+   * cooperative cancellation and a terminal wait. All allocation and the
+   * noninstalled snapshot fault precede mutation. After mutation,
+   * `settle_close_records` cannot return failure. Record mutexes are never
    * acquired while the registry mutex is held.
    */
   void close_session(SessionId session_id) {
@@ -366,6 +376,10 @@ class JobRegistry final {
     std::vector<std::shared_ptr<JobRecord>> running;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+      test::hit_exception_fence_fault(
+          test::ExceptionFenceFaultPoint::SessionCloseSnapshot);
+#endif
       queued.reserve(queue_.size());
       running.reserve(jobs_.size());
       for (auto iterator = queue_.begin(); iterator != queue_.end();) {
@@ -396,6 +410,34 @@ class JobRegistry final {
       }
     }
 
+    settle_close_records(queued, running);
+  }
+
+  /**
+   * @brief Returns the current retained execution count.
+   * @return Number of queued, running, and terminal records in the map.
+   * @throws Nothing.
+   * @note The observation may change immediately after return.
+   */
+  [[nodiscard]] std::uint64_t size() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return jobs_.size();
+  }
+
+ private:
+  /**
+   * @brief Settles records after Session-close registry mutation commits.
+   * @param queued Records detached while still owned by the worker queue.
+   * @param running Records already popped by a worker before classification.
+   * @throws Nothing under valid mutex/condition-variable ownership.
+   * @note This post-mutation path allocates nothing and cannot report a
+   * recoverable failure. Queued records synchronously traverse Running to
+   * Cancelled; popped records receive cancellation and are awaited without the
+   * JobRegistry, Session-registry, or lifecycle mutex held.
+   */
+  static void settle_close_records(
+      const std::vector<std::shared_ptr<JobRecord>>& queued,
+      const std::vector<std::shared_ptr<JobRecord>>& running) noexcept {
     for (const auto& record : queued) {
       static_cast<void>(record->cancellation.cancel());
       std::lock_guard<std::mutex> record_lock(record->mutex);
@@ -417,18 +459,6 @@ class JobRegistry final {
     }
   }
 
-  /**
-   * @brief Returns the current retained execution count.
-   * @return Number of queued, running, and terminal records in the map.
-   * @throws Nothing.
-   * @note The observation may change immediately after return.
-   */
-  [[nodiscard]] std::uint64_t size() const noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return jobs_.size();
-  }
-
- private:
   /**
    * @brief Finds one retained record with shared lifetime.
    * @param id Exact process-scoped ephemeral identifier.
@@ -471,7 +501,8 @@ class JobRegistry final {
    * @param record Shared record retained across namespace close.
    * @throws Nothing across the worker boundary.
    * @note Cancellation is rechecked before compilation, before execution, and
-   * before result publication.
+   * before result publication. The noninstalled test runtime may hold the
+   * boundary after Running publication without changing production objects.
    */
   void execute(const std::shared_ptr<JobRecord>& record) noexcept {
     try {
@@ -486,6 +517,9 @@ class JobRegistry final {
         }
         record->state = JobState::Running;
       }
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+      test::observe_job_running();
+#endif
 
       if (record->cancellation.token().cancelled()) {
         finish_cancelled(record, "execution cancelled before compilation");
@@ -738,26 +772,63 @@ struct Service::Impl final {
    * @param id Exact process-scoped namespace identifier.
    * @return Success or `NotFound` for stale/missing identity.
    * @throws std::bad_alloc If closing-record snapshot allocation fails.
-   * @note Queued executions are removed and synchronously cancelled; popped
-   * or running executions are cooperatively cancelled and awaited. Unrelated
-   * namespace work never participates in this close wait.
+   * @note Under `lifecycle_mutex -> sessions_mutex`, an open record becomes
+   * closing. Both locks are then released before JobRegistry cancellation and
+   * any popped-Job wait. Snapshot failure occurs before Job mutation and
+   * reopens the same record for retry. Successful settlement reacquires the
+   * same lock order, erases the record, and only then releases capacity.
    */
   Status close_session(SessionId id) {
-    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
+    std::shared_ptr<SessionRecord> closing_session;
     {
+      std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
       std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
+      const auto iterator = sessions.find(id.value);
       if (id.instance != instance_id || id.value == 0U ||
-          sessions.find(id.value) == sessions.end()) {
+          iterator == sessions.end() || iterator->second->closing) {
         return Status::failure(ErrorCode::NotFound,
                                "ephemeral namespace does not exist");
       }
+      closing_session = iterator->second;
+      closing_session->closing = true;
     }
-    jobs.close_session(id);
-    {
+    try {
+      jobs.close_session(id);
+    } catch (...) {
+      std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
       std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
-      sessions.erase(id.value);
+      const auto iterator = sessions.find(id.value);
+      if (iterator != sessions.end() && iterator->second == closing_session) {
+        closing_session->closing = false;
+      }
+      throw;
     }
+    finalize_session_close(id, closing_session);
     return Status::success();
+  }
+
+  /**
+   * @brief Commits Session removal after Job settlement has mutated ownership.
+   * @param id Exact process-scoped namespace identifier being closed.
+   * @param closing_session Exact record that won the close transition.
+   * @throws Nothing under valid mutex and close-state invariants.
+   * @note This post-mutation path reports no recoverable failure: it reacquires
+   * `lifecycle_mutex -> sessions_mutex`, verifies the retained closing record,
+   * and releases capacity exactly once. A violated internal invariant
+   * terminates instead of returning success with an inconsistent Session
+   * registry.
+   */
+  void finalize_session_close(
+      SessionId id,
+      const std::shared_ptr<SessionRecord>& closing_session) noexcept {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
+    std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
+    const auto iterator = sessions.find(id.value);
+    if (iterator == sessions.end() || iterator->second != closing_session ||
+        !closing_session->closing) {
+      std::terminate();
+    }
+    sessions.erase(iterator);
   }
 
   /**
@@ -766,7 +837,8 @@ struct Service::Impl final {
    * @param options Public local planning/execution controls.
    * @return New JobId or precise identity/backpressure failure.
    * @throws std::bad_alloc If record or queue allocation fails.
-   * @note The lifecycle lock prevents admission after close validation.
+   * @note The lifecycle lock prevents admission between open-state validation
+   * and JobRegistry publication. A retained closing record returns `NotFound`.
    */
   Result<JobId> submit(SessionId id, JobSubmitOptions options) {
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
@@ -775,7 +847,7 @@ struct Service::Impl final {
       std::lock_guard<std::mutex> sessions_lock(sessions_mutex);
       const auto iterator = sessions.find(id.value);
       if (id.instance != instance_id || id.value == 0U ||
-          iterator == sessions.end()) {
+          iterator == sessions.end() || iterator->second->closing) {
         return Result<JobId>(Status::failure(
             ErrorCode::NotFound, "ephemeral namespace does not exist"));
       }
@@ -807,9 +879,17 @@ struct Service::Impl final {
   ExecutionContext execution;
   /** @brief Global ephemeral execution registry. */
   JobRegistry jobs;
-  /** @brief Serializes close against submit. */
+  /**
+   * @brief Serializes open/closing transitions against submit publication.
+   * @note Always precedes `sessions_mutex`; never held across Job cancellation,
+   * record mutex acquisition, worker execution, or terminal waiting.
+   */
   std::mutex lifecycle_mutex;
-  /** @brief Serializes namespace registry. */
+  /**
+   * @brief Serializes namespace records, closing state, and capacity.
+   * @note JobRegistry never acquires this mutex. Operations needing both
+   * lifecycle and Session state acquire `lifecycle_mutex` first.
+   */
   mutable std::mutex sessions_mutex;
   /** @brief Ephemeral namespace map. */
   std::map<std::uint64_t, std::shared_ptr<SessionRecord>> sessions;

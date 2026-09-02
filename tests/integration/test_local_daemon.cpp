@@ -6,9 +6,11 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -22,6 +24,7 @@
 #include "orchestration/service.hpp"
 #include "photospider/ipc/client.hpp"
 #include "server/server.hpp"
+#include "support/exception_fence_faults.hpp"
 #include "support/server_run_guard.hpp"
 #include "support/test_support.hpp"
 
@@ -40,6 +43,217 @@ constexpr std::int64_t kWorkerSaturationDelayMilliseconds = 5000;
 
 /** @brief Maximum accepted close latency for cancelling long operations. */
 constexpr std::chrono::seconds kSessionCloseTimeout{2};
+
+/** @brief Short proof window for one close that must remain blocked. */
+constexpr std::chrono::milliseconds kCloseBlockedObservation{100};
+
+/**
+ * @brief Holds the first Job after Running publication and before compilation.
+ *
+ * @note Destruction releases and waits for an entered observer, making early
+ * test returns safe before ServerRunGuard begins worker shutdown.
+ */
+class JobRunningGate final {
+ public:
+  /**
+   * @brief Releases an entered worker and waits until it leaves the callback.
+   * @throws Nothing.
+   */
+  ~JobRunningGate() noexcept {
+    try {
+      release();
+      std::unique_lock<std::mutex> lock(mutex_);
+      changed_.wait(lock, [this] { return !entered_ || exited_; });
+    } catch (...) {
+    }
+  }
+
+  /**
+   * @brief Blocks exactly the first observed Job-Running boundary.
+   * @throws std::system_error If test synchronization fails.
+   * @note Later Jobs pass immediately so another worker can execute Session B.
+   */
+  void hold_first() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (entered_) {
+      return;
+    }
+    entered_ = true;
+    changed_.notify_all();
+    changed_.wait(lock, [this] { return released_; });
+    exited_ = true;
+    changed_.notify_all();
+  }
+
+  /**
+   * @brief Waits for the first worker to enter the held boundary.
+   * @param timeout Maximum bounded wait.
+   * @return True when Running was observed before the deadline.
+   * @throws std::system_error If test synchronization fails.
+   */
+  bool wait_until_entered(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, timeout, [this] { return entered_; });
+  }
+
+  /**
+   * @brief Releases the held worker idempotently.
+   * @throws std::system_error If test synchronization fails.
+   */
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+    changed_.notify_all();
+  }
+
+ private:
+  /** @brief Serializes deterministic gate state. */
+  std::mutex mutex_;
+  /** @brief Wakes test and worker on entry/release/exit. */
+  std::condition_variable changed_;
+  /** @brief Whether the first Running boundary entered. */
+  bool entered_ = false;
+  /** @brief Whether the held worker may continue. */
+  bool released_ = false;
+  /** @brief Whether the held observer callback has returned. */
+  bool exited_ = false;
+};
+
+/** @brief Borrowed active Running gate for one scoped regression. */
+std::atomic<JobRunningGate*> g_job_running_gate{nullptr};
+
+/**
+ * @brief Bridges the noninstalled post-Running observer into its gate.
+ * @throws Any test synchronization exception, fenced by the observer boundary.
+ */
+void hold_first_running_job() {
+  JobRunningGate* gate = g_job_running_gate.load(std::memory_order_acquire);
+  if (gate) {
+    gate->hold_first();
+  }
+}
+
+/** @brief Scoped installation of the noninstalled Job-Running observer. */
+class JobRunningHookScope final {
+ public:
+  /**
+   * @brief Installs one borrowed deterministic gate.
+   * @param gate Nonnull gate that outlives this scope.
+   * @throws std::invalid_argument If gate is null.
+   */
+  explicit JobRunningHookScope(JobRunningGate* gate) {
+    if (!gate) {
+      throw std::invalid_argument("JobRunningHookScope requires a gate");
+    }
+    g_job_running_gate.store(gate, std::memory_order_release);
+    ps::ipc::test::install_job_running_observer(&hold_first_running_job);
+  }
+
+  /**
+   * @brief Clears the observer before the gate releases or is destroyed.
+   * @throws Nothing.
+   */
+  ~JobRunningHookScope() noexcept {
+    ps::ipc::test::install_job_running_observer(nullptr);
+    g_job_running_gate.store(nullptr, std::memory_order_release);
+  }
+
+  /**
+   * @brief Forbids duplicate process-global hook ownership.
+   * @param other Source scope that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobRunningHookScope(const JobRunningHookScope& other) = delete;
+  /**
+   * @brief Forbids assigning process-global hook ownership.
+   * @param other Source scope that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  JobRunningHookScope& operator=(const JobRunningHookScope& other) = delete;
+};
+
+/**
+ * @brief Owns one async RPC whose cleanup first releases a Running gate.
+ * @tparam T Complete RPC result type.
+ *
+ * @note This guard prevents an early test return from blocking in
+ * `std::future` destruction while the matching close still waits on the gate.
+ */
+template <typename T>
+class GateReleasingFuture final {
+ public:
+  /**
+   * @brief Launches one asynchronous RPC with fail-safe gate ownership.
+   * @tparam Function Nullary callable returning T.
+   * @param gate Nonnull gate released during unfinished cleanup.
+   * @param function RPC callable copied or moved into `std::async`.
+   * @throws Any exception raised while launching the async task.
+   */
+  template <typename Function>
+  GateReleasingFuture(JobRunningGate* gate, Function&& function)
+      : gate_(gate),
+        future_(
+            std::async(std::launch::async, std::forward<Function>(function))) {
+    if (!gate_) {
+      throw std::invalid_argument("GateReleasingFuture requires a gate");
+    }
+  }
+
+  /**
+   * @brief Releases the gate and waits if the result was not consumed.
+   * @throws Nothing.
+   */
+  ~GateReleasingFuture() noexcept {
+    if (!future_.valid()) {
+      return;
+    }
+    try {
+      gate_->release();
+      future_.wait();
+    } catch (...) {
+    }
+  }
+
+  /**
+   * @brief Forbids duplicate future/gate cleanup ownership.
+   * @param other Source guard that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  GateReleasingFuture(const GateReleasingFuture& other) = delete;
+  /**
+   * @brief Forbids assigning duplicate future/gate cleanup ownership.
+   * @param other Source guard that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  GateReleasingFuture& operator=(const GateReleasingFuture& other) = delete;
+
+  /**
+   * @brief Waits for bounded RPC readiness without releasing the gate.
+   * @param timeout Maximum observation interval.
+   * @return True when the async result is ready.
+   * @throws std::future_error If the result was already consumed.
+   */
+  bool ready_within(std::chrono::milliseconds timeout) {
+    return future_.wait_for(timeout) == std::future_status::ready;
+  }
+
+  /**
+   * @brief Consumes the complete asynchronous RPC result.
+   * @return Result returned by the callable.
+   * @throws Any exception propagated from the callable.
+   */
+  T get() { return future_.get(); }
+
+ private:
+  /** @brief Borrowed gate released before unfinished wait cleanup. */
+  JobRunningGate* gate_;
+  /** @brief Sole asynchronous RPC result owner. */
+  std::future<T> future_;
+};
 
 /**
  * @brief Builds one deterministic addition source document.
@@ -155,6 +369,31 @@ ps::ipc::JobStatus wait_state(ps::ipc::Client* client, ps::ipc::JobId id,
     std::this_thread::sleep_for(kJobStatusPollInterval);
   }
   throw std::runtime_error("execution did not reach expected state");
+}
+
+/**
+ * @brief Waits until Session close removes one Job from public observation.
+ * @param client Connected client whose handler is independent from close.
+ * @param id Job owned by the Session being closed.
+ * @param timeout Maximum bounded wait.
+ * @return True when status becomes `NotFound`, false on timeout.
+ * @throws std::runtime_error If another typed failure is observed.
+ * @note Removal proves close reached the JobRegistry mutation/wait boundary.
+ */
+bool wait_job_not_found(ps::ipc::Client* client, ps::ipc::JobId id,
+                        std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto status = client->job_status(id);
+    if (!status.ok()) {
+      if (status.status().code == ps::ErrorCode::NotFound) {
+        return true;
+      }
+      throw std::runtime_error(status.status().message);
+    }
+    std::this_thread::sleep_for(kJobStatusPollInterval);
+  }
+  return false;
 }
 
 /**
@@ -812,6 +1051,174 @@ int main() {
     PS_IPC_CHECK(recovered.connect(exception_path).ok());
     PS_IPC_CHECK(recovered.daemon_info().ok());
     PS_IPC_CHECK(recovered.daemon_shutdown().ok());
+    PS_IPC_CHECK(server_run.join().ok());
+    PS_IPC_CHECK(server.active_handler_count() == 0U);
+    PS_IPC_CHECK(server.retained_handler_count() == 0U);
+  }
+
+  {
+    // SessionCloseSnapshotFailureReopensAdmission regression.
+    ps::ipc::test::reset_exception_fence_faults();
+    const std::string snapshot_path = socket_path();
+    internal::Server server(
+        internal::ServerConfig{snapshot_path,
+                               internal::ServiceConfig{1U, 8U, 2U, false},
+                               8,
+                               64U,
+                               {},
+                               {}});
+    ps::ipc::test::ServerRunGuard server_run(&server);
+    Client client;
+    PS_IPC_CHECK(client.connect(snapshot_path).ok());
+    auto session = client.session_create(addition_document(1.0, 2.0));
+    PS_IPC_CHECK(session.ok());
+    ps::ipc::test::arm_exception_fence_fault(
+        ps::ipc::test::ExceptionFenceFaultPoint::SessionCloseSnapshot,
+        ps::ipc::test::ExceptionFenceFaultAction::BadAlloc);
+    auto failed_close = client.session_close(session.value());
+    PS_IPC_CHECK(!failed_close.ok());
+    PS_IPC_CHECK(failed_close.code == ErrorCode::ResourceExhausted);
+    PS_IPC_CHECK(
+        ps::ipc::test::exception_fence_fault_hits(
+            ps::ipc::test::ExceptionFenceFaultPoint::SessionCloseSnapshot) ==
+        1U);
+    ps::ipc::test::reset_exception_fence_faults();
+    auto retry_job = client.job_submit(session.value());
+    PS_IPC_CHECK(retry_job.ok());
+    PS_IPC_CHECK(wait_terminal(&client, retry_job.value()).state ==
+                 JobState::Succeeded);
+    PS_IPC_CHECK(client.session_close(session.value()).ok());
+    auto removed = client.job_status(retry_job.value());
+    PS_IPC_CHECK(!removed.ok());
+    PS_IPC_CHECK(removed.status().code == ErrorCode::NotFound);
+    PS_IPC_CHECK(client.daemon_shutdown().ok());
+    PS_IPC_CHECK(server_run.join().ok());
+    ps::ipc::test::reset_exception_fence_faults();
+  }
+
+  {
+    // ClosingSessionDoesNotBlockUnrelatedLifecycle regression.
+    const std::string closing_isolation_path = socket_path();
+    internal::Server server(
+        internal::ServerConfig{closing_isolation_path,
+                               internal::ServiceConfig{2U, 8U, 2U, false},
+                               16,
+                               64U,
+                               {},
+                               {}});
+    ps::ipc::test::ServerRunGuard server_run(&server);
+    JobRunningGate running_gate;
+    JobRunningHookScope running_hook(&running_gate);
+    Client observer;
+    Client close_a_client;
+    Client session_b_client;
+    Client repeated_close_client;
+    Client capacity_client;
+    PS_IPC_CHECK(observer.connect(closing_isolation_path).ok());
+    PS_IPC_CHECK(close_a_client.connect(closing_isolation_path).ok());
+    PS_IPC_CHECK(session_b_client.connect(closing_isolation_path).ok());
+    PS_IPC_CHECK(repeated_close_client.connect(closing_isolation_path).ok());
+    PS_IPC_CHECK(capacity_client.connect(closing_isolation_path).ok());
+
+    auto session_a = observer.session_create(addition_document(10.0, 20.0));
+    PS_IPC_CHECK(session_a.ok());
+    auto job_a = observer.job_submit(session_a.value());
+    PS_IPC_CHECK(job_a.ok());
+    PS_IPC_CHECK(running_gate.wait_until_entered(kJobStatusTimeout));
+    auto running_a = observer.job_status(job_a.value());
+    PS_IPC_CHECK(running_a.ok());
+    PS_IPC_CHECK(running_a.value().state == JobState::Running);
+
+    GateReleasingFuture<ps::Status> close_a_future(&running_gate, [&] {
+      return close_a_client.session_close(session_a.value());
+    });
+    PS_IPC_CHECK(
+        wait_job_not_found(&observer, job_a.value(), kSessionCloseTimeout));
+    PS_IPC_CHECK(!close_a_future.ready_within(kCloseBlockedObservation));
+
+    const auto create_b_started = std::chrono::steady_clock::now();
+    GateReleasingFuture<ps::Result<SessionId>> create_b_future(
+        &running_gate, [&] {
+          return session_b_client.session_create(addition_document(3.0, 4.0));
+        });
+    const bool create_b_ready =
+        create_b_future.ready_within(kSessionCloseTimeout);
+    if (!create_b_ready) {
+      running_gate.release();
+      auto close_a_cleanup = close_a_future.get();
+      auto session_b_cleanup = create_b_future.get();
+      if (session_b_cleanup.ok()) {
+        static_cast<void>(
+            session_b_client.session_close(session_b_cleanup.value()));
+      }
+      static_cast<void>(observer.daemon_shutdown());
+      static_cast<void>(server_run.join());
+      static_cast<void>(close_a_cleanup);
+      PS_IPC_CHECK(create_b_ready);
+    }
+    auto session_b = create_b_future.get();
+    PS_IPC_CHECK(session_b.ok());
+    PS_IPC_CHECK(std::chrono::steady_clock::now() - create_b_started <
+                 kSessionCloseTimeout);
+
+    const auto submit_b_started = std::chrono::steady_clock::now();
+    auto job_b = session_b_client.job_submit(session_b.value());
+    PS_IPC_CHECK(job_b.ok());
+    PS_IPC_CHECK(std::chrono::steady_clock::now() - submit_b_started <
+                 kSessionCloseTimeout);
+    PS_IPC_CHECK(wait_terminal(&session_b_client, job_b.value()).state ==
+                 JobState::Succeeded);
+
+    const auto submit_a_started = std::chrono::steady_clock::now();
+    auto late_a_submit = observer.job_submit(session_a.value());
+    PS_IPC_CHECK(!late_a_submit.ok());
+    PS_IPC_CHECK(late_a_submit.status().code == ErrorCode::NotFound);
+    PS_IPC_CHECK(std::chrono::steady_clock::now() - submit_a_started <
+                 kSessionCloseTimeout);
+
+    const auto repeated_close_started = std::chrono::steady_clock::now();
+    auto repeated_close =
+        repeated_close_client.session_close(session_a.value());
+    PS_IPC_CHECK(!repeated_close.ok());
+    PS_IPC_CHECK(repeated_close.code == ErrorCode::NotFound);
+    PS_IPC_CHECK(std::chrono::steady_clock::now() - repeated_close_started <
+                 kSessionCloseTimeout);
+
+    const auto capacity_started = std::chrono::steady_clock::now();
+    auto capacity_rejected =
+        capacity_client.session_create(addition_document(5.0, 6.0));
+    PS_IPC_CHECK(!capacity_rejected.ok());
+    PS_IPC_CHECK(capacity_rejected.status().code ==
+                 ErrorCode::ResourceExhausted);
+    PS_IPC_CHECK(std::chrono::steady_clock::now() - capacity_started <
+                 kSessionCloseTimeout);
+    PS_IPC_CHECK(!close_a_future.ready_within(kCloseBlockedObservation));
+
+    const auto close_b_started = std::chrono::steady_clock::now();
+    PS_IPC_CHECK(session_b_client.session_close(session_b.value()).ok());
+    PS_IPC_CHECK(std::chrono::steady_clock::now() - close_b_started <
+                 kSessionCloseTimeout);
+
+    running_gate.release();
+    PS_IPC_CHECK(close_a_future.ready_within(kSessionCloseTimeout));
+    PS_IPC_CHECK(close_a_future.get().ok());
+    auto missing_a_status = observer.job_status(job_a.value());
+    auto missing_a_result = observer.job_result(job_a.value());
+    PS_IPC_CHECK(!missing_a_status.ok());
+    PS_IPC_CHECK(missing_a_status.status().code == ErrorCode::NotFound);
+    PS_IPC_CHECK(!missing_a_result.ok());
+    PS_IPC_CHECK(missing_a_result.status().code == ErrorCode::NotFound);
+
+    auto reused = observer.session_create(addition_document(7.0, 8.0));
+    PS_IPC_CHECK(reused.ok());
+    PS_IPC_CHECK(reused.value().value > session_a.value().value);
+    PS_IPC_CHECK(reused.value().value > session_b.value().value);
+    PS_IPC_CHECK(observer.session_close(reused.value()).ok());
+    auto settled = observer.daemon_info();
+    PS_IPC_CHECK(settled.ok());
+    PS_IPC_CHECK(settled.value().active_sessions == 0U);
+    PS_IPC_CHECK(settled.value().active_jobs == 0U);
+    PS_IPC_CHECK(observer.daemon_shutdown().ok());
     PS_IPC_CHECK(server_run.join().ok());
     PS_IPC_CHECK(server.active_handler_count() == 0U);
     PS_IPC_CHECK(server.retained_handler_count() == 0U);
