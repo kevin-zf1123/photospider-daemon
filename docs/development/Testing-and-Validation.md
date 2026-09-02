@@ -34,6 +34,13 @@ never a sibling source target or private kernel include path.
   without state mutation or declared-length allocation.
 - Session tests cover positive `maximum_sessions`, no-allocation/no-id
   backpressure, close/reuse, exact cleanup, and concurrent admission. A
+  noninstalled pending-create gate holds Session A after its capacity
+  reservation. Existing Session B can still submit and close, a full create is
+  rejected immediately, and closing B permits Session C to publish while A is
+  still compiling. Releasing A proves retained-plus-pending accounting,
+  monotonic ids, and zero residual state. Compiler validation failure plus
+  injected candidate/publication exceptions independently prove reservation
+  rollback and that the first successful create still receives id one. A
   noninstalled post-Running gate holds Session A before its non-preemptible
   compiler boundary while close A waits. With A still retained as closing, a
   second worker and independent real-socket handlers prove Session B can
@@ -102,7 +109,8 @@ source list under `PHOTOSPIDER_DAEMON_TEST_RUNTIME` and adds the fixed exception
 controller. `test_ipc_codec`, `test_local_daemon`, and
 `test_exception_fences` link only that noninstalled static variant; normal
 binaries and package consumers link only the production target. No executable
-links both variants. The codec count observer and arithmetic probe exist only
+links both variants. The codec count observer, arithmetic probe,
+pending-Session-create observer, and Session/worker fault points exist only
 under the private test-runtime macro.
 
 After changing a private lifecycle seam, manually inspect the production

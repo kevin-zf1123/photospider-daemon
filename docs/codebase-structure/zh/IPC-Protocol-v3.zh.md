@@ -140,8 +140,13 @@ bounds/type/shape/Region/layout/facet validation 重新发布每个 Value；失�
 
 Request 包含一个完整 WorkflowDocument。成功返回 fresh `SessionId`。Session 只是
 保留一个 immutable kernel `GraphContext` 的 logical namespace。正值、进程全局的
-`maximum_sessions` bound 会在 graph/compiler allocation、publication 或 id consumption
-前检查。Registry 满时返回 `ResourceExhausted`，且不创建任何状态。
+`maximum_sessions` bound 统计 retained Session（包括 closing record）与未发布的 pending
+create。Admission 会在短暂的 `lifecycle_mutex -> sessions_mutex` 临界区内预留一个 slot，
+随后才进行 graph/compiler allocation、publication 或 id consumption。GraphContext
+construction 与 compilation 在两个锁之外运行。Registry 满时立即返回
+`ResourceExhausted`；compilation、construction 或 insertion failure 会回滚 reservation，
+且不消耗 id。第二个短临界区只发布完整 record，随后推进 monotonic id。Pending create
+不会出现在 `daemon.info.active_sessions` 中。
 
 ### `session.close`
 
@@ -197,7 +202,8 @@ Caller 只能通过 `job.submit` retry，并获得 distinct identifier。
 
 `daemon.info` 返回 protocol version、non-security process instance token、package
 version、`unix-domain` transport、exact sorted method list、live Session/Job count 与
-fixed global concurrency，以及 fixed retained-Session bound。
+fixed global concurrency，以及 fixed retained-Session bound。Active Session count
+包含 retained closing record，但不包含未发布的 pending create。
 
 `daemon.shutdown` 会在完整 success response 与所有 fault-capable operation 都完成 stage
 之后，于 no-throw Service commit 被接受。该 commit 会 atomically 关闭后续普通 admission
@@ -253,7 +259,9 @@ credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。P
 
 - state mutation 前完成 frame、version、enum、UTF-8、count、length、overflow 与
   trailing-data validation。
-- Session creation 在 registry publication 前 compile。
+- Session creation 在短暂的 lifecycle/Session 锁序下对 retained-plus-pending capacity
+  reservation，在两个锁之外 compile，且只发布完整 record。每个 pre-publication failure
+  都会精确回滚一个 reservation 且不消耗 id；pending create 不是 active Session。
 - Session close 与 submit 原子竞争，在标记 closing 期间保持占用 capacity，等待自身已
   pop work 前释放 global lifecycle serialization，精确移除 queued ownership，并拒绝后续
   result publication。Pre-mutation snapshot failure 会重新打开 Session；成功 settle 后

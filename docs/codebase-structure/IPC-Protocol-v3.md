@@ -155,9 +155,16 @@ visible after failure.
 
 The request contains one complete WorkflowDocument. Success returns a fresh
 `SessionId`. A Session is only a logical namespace retaining one immutable
-kernel `GraphContext`. The positive process-global `maximum_sessions` bound is
-checked before graph/compiler allocation, publication, or id consumption. A
-full registry returns `ResourceExhausted` and creates nothing.
+kernel `GraphContext`. The positive process-global `maximum_sessions` bound
+counts retained Sessions, including closing records, plus unpublished pending
+creates. Admission reserves one slot in a short
+`lifecycle_mutex -> sessions_mutex` critical section before graph/compiler
+allocation, publication, or id consumption. GraphContext construction and
+compilation then run without either lock. A full registry returns
+`ResourceExhausted` immediately; compilation, construction, or insertion
+failure rolls the reservation back and consumes no id. A second short critical
+section publishes the complete record, then advances the monotonic id. Pending
+creates remain absent from `daemon.info.active_sessions`.
 
 ### `session.close`
 
@@ -219,7 +226,8 @@ A caller retries only by `job.submit`, which creates a distinct identifier.
 `daemon.info` returns protocol version, non-security process instance token,
 package version, `unix-domain` transport, exact sorted method list, live
 Session/Job counts, fixed global concurrency, and the fixed retained-Session
-bound.
+bound. Its active Session count includes retained closing records but excludes
+unpublished pending creates.
 
 `daemon.shutdown` is accepted at a no-throw Service commit after the complete
 success response and every fault-capable operation have been staged. The commit
@@ -289,7 +297,11 @@ same-uid writer racing exactly between them.
 
 - Frame, version, enum, UTF-8, count, length, overflow, and trailing-data
   validation occurs before state mutation.
-- Session creation compiles before registry publication.
+- Session creation reserves against retained-plus-pending capacity under a
+  short lifecycle/Session lock order, compiles outside both locks, and
+  publishes only a complete record. Every pre-publication failure rolls back
+  exactly one reservation and consumes no id; pending creates are not active
+  Sessions.
 - Session close is atomic against submit, retains capacity while marked
   closing, releases global lifecycle serialization before waiting only for its
   own popped work, removes queued ownership exactly, and rejects later result

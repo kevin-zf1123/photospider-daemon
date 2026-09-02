@@ -19,6 +19,15 @@ using ShutdownResponseWriteObserver = void (*)(bool accepted_shutdown,
  */
 using JobRunningObserver = void (*)();
 
+/**
+ * @brief Test-only observer after Session-create capacity reservation.
+ * @return No value.
+ * @throws Any exception raised by test synchronization; the invocation seam
+ * fences it so production-equivalent control flow can continue.
+ * @note The borrowed callback exists only in the noninstalled test runtime.
+ */
+using SessionCreatePendingObserver = void (*)();
+
 /** @brief Deterministic exception-fence points in the test-only runtime. */
 enum class ExceptionFenceFaultPoint : std::uint32_t {
   /** @brief Throws after one Service method has produced its response. */
@@ -39,6 +48,14 @@ enum class ExceptionFenceFaultPoint : std::uint32_t {
   ProtocolFailureWrite,
   /** @brief Throws before Session-close snapshot allocation or mutation. */
   SessionCloseSnapshot,
+  /** @brief Throws after Session-create capacity reservation. */
+  SessionCreateCandidate,
+  /** @brief Throws immediately before Session map publication. */
+  SessionCreatePublication,
+  /** @brief Throws after a worker publishes Running. */
+  JobPrimary,
+  /** @brief Throws before worker failure status materialization. */
+  JobFailureStatus,
   /** @brief One-past-the-end value used only to size fixed test state. */
   Count,
 };
@@ -56,7 +73,8 @@ enum class ExceptionFenceFaultAction : std::uint32_t {
 };
 
 /**
- * @brief Clears every armed one-shot fault and observation count.
+ * @brief Clears every observer, armed one-shot fault, and observation count.
+ * @return No value.
  * @throws Nothing.
  * @note Call only while no exception-test handler is using the controller.
  */
@@ -66,6 +84,7 @@ void reset_exception_fence_faults() noexcept;
  * @brief Arms one test-only point to raise exactly once.
  * @param point Exact instrumented boundary.
  * @param action Exception category; `None` leaves the point observational.
+ * @return No value.
  * @throws Nothing.
  * @note Configuration is published before a handler thread is started.
  */
@@ -94,11 +113,30 @@ void install_shutdown_response_observers(
 void install_job_running_observer(JobRunningObserver observer) noexcept;
 
 /**
+ * @brief Installs or clears the pending Session-create observer.
+ * @param observer Callback after capacity reservation, or null to clear.
+ * @return No value.
+ * @throws Nothing.
+ * @note Install before create and clear only after every observed create has
+ * left the callback. This seam exists only in the noninstalled test runtime.
+ */
+void install_session_create_pending_observer(
+    SessionCreatePendingObserver observer) noexcept;
+
+/**
  * @brief Invokes the installed post-Running test observer.
  * @throws Nothing; every observer exception is fenced.
  * @note Production orchestration objects contain no corresponding callback.
  */
 void observe_job_running() noexcept;
+
+/**
+ * @brief Invokes the installed pending Session-create observer.
+ * @return No value.
+ * @throws Nothing; every observer exception is fenced.
+ * @note Production orchestration objects contain no corresponding callback.
+ */
+void observe_session_create_pending() noexcept;
 
 /**
  * @brief Invokes the installed post-dispatch response observer.

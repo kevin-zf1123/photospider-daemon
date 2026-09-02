@@ -46,10 +46,16 @@ matching record，只等待已被 worker pop 的 matching work，释放全部临
 context。Queue removal 会同步完成既有 `Queued -> Running -> Cancelled` lifecycle；
 无关 Session 的 Running Job 不参与该等待。Daemon restart 清空所有 Session。
 
-Session retention 具有一个正值、进程全局的 `maximum_sessions` bound。Admission 在构造
-graph/compiler 或消耗 identifier 前检查容量；registry 满时返回 `ResourceExhausted`。
-Close 在自身 record settle 后精确释放一个 slot，因此后续 create 可复用容量，但不会
-复用 identifier，也不会等待无关 execution。
+Session retention 具有一个正值、进程全局的 `maximum_sessions` bound。Admission 会短暂
+持有 `lifecycle_mutex -> sessions_mutex`，在构造 graph/compiler 或消耗 identifier 前预留
+容量。Retained Session（包括 closing record）与 pending create 之和不得超过该 bound。
+GraphContext construction 与 compilation 在两个锁之外执行，因此 create pending 时，无关
+retained Session 仍可 submit 或 close。Registry 满时立即返回 `ResourceExhausted`。
+Compilation、construction 与 map-publication failure 都会释放 reservation 且不消耗
+identifier；只有成功 insertion 才推进 monotonic id。Pending create 不是已发布 Session，
+不会出现在 `daemon.info.active_sessions` 中。Close 在自身 record settle 后精确释放一个
+retained slot，因此后续 create 可复用容量，但不会复用 identifier，也不会等待无关
+execution。
 
 ### 临时 Job
 

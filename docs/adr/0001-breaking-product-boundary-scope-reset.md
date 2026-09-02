@@ -53,10 +53,18 @@ destroys the context. Queue removal synchronously completes the existing
 does not participate in the wait. Daemon restart clears every Session.
 
 Session retention has one positive process-global `maximum_sessions` bound.
-Admission checks capacity before constructing a graph/compiler or consuming an
-identifier; a full registry returns `ResourceExhausted`. Close releases exactly
-one slot after its own records settle, so later creation can reuse capacity
-without reusing an identifier or waiting for unrelated execution.
+Admission briefly holds `lifecycle_mutex -> sessions_mutex` to reserve capacity
+before constructing a graph/compiler or consuming an identifier. Retained
+Sessions, including closing records, plus pending creates cannot exceed the
+bound. GraphContext construction and compilation run outside both locks, so an
+unrelated retained Session can submit or close while a create is pending. A
+full registry returns `ResourceExhausted` immediately. Compilation, construction,
+and map-publication failures release the reservation and consume no identifier;
+only successful insertion advances the monotonic id. Pending creates are not
+published Sessions and do not appear in `daemon.info.active_sessions`. Close
+releases exactly one retained slot after its own records settle, so later
+creation can reuse capacity without reusing an identifier or waiting for
+unrelated execution.
 
 ### Ephemeral Jobs
 
