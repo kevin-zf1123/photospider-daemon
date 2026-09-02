@@ -109,6 +109,15 @@ still require exact nonzero request-id/method correlation. The sentinel is a
 best-effort server response: if transport failure prevents a complete read,
 the Client returns that transport failure instead.
 
+After a complete request write, clean EOF before any response bytes is a public
+`Internal` transport failure. The Client resets its descriptor and reports that
+the peer closed before a response and the request outcome is unknown; it does
+not expose the private frame reader's `NotFound`, because the server may already
+have applied request effects. The private reader keeps `NotFound` for a server
+observing an ordinary client close, partial response EOF remains
+`InvalidArgument`, and a complete ordinary business `NotFound` response or
+failed sentinel retains its exact typed status.
+
 ## Ephemeral identifiers
 
 `SessionId` and `JobId` each contain two opaque uint64 values:

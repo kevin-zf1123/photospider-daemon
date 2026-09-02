@@ -419,10 +419,14 @@ std::string socket_path() {
 enum class PublicClientResponseKind : std::uint8_t {
   /** @brief Legal zero-id/daemon.info failed protocol sentinel. */
   FailedSentinel,
+  /** @brief Complete matching ordinary business NotFound response. */
+  BusinessNotFound,
   /** @brief Ordinary response with a wrong nonzero request id. */
   WrongRequestId,
   /** @brief Ordinary response with the expected id but wrong method. */
   WrongMethod,
+  /** @brief Peer closes after decoding the request without a response. */
+  CloseWithoutResponse,
 };
 
 /**
@@ -494,19 +498,23 @@ class PublicClientServerThread final {
 };
 
 /**
- * @brief Captures public Client behavior after one complete failed response.
+ * @brief Captures public Client behavior after one fake-server exchange.
  *
  * @note `server_completed` distinguishes a Client result from fixture setup or
  * transport failure, making every correlation assertion independently
  * falsifiable.
  */
 struct PublicClientObservation final {
-  /** @brief Whether the responder validated the request and wrote its frame. */
+  /**
+   * @brief Whether the responder validated and completed its selected action.
+   */
   bool server_completed = false;
   /** @brief Whether `Client::daemon_info()` unexpectedly returned a value. */
   bool result_ok = false;
   /** @brief Returned failure category, or `Ok` for an unexpected value. */
   ps::ErrorCode status_code = ps::ErrorCode::Ok;
+  /** @brief Exact returned diagnostic for a failed public call. */
+  std::string status_message;
   /** @brief Descriptor ownership observed immediately after the public call. */
   bool connected_after_call = false;
 };
@@ -529,8 +537,12 @@ ps::Result<std::vector<std::uint8_t>> encode_public_client_response(
   using ps::ipc::internal::Method;
   using ps::ipc::internal::Response;
 
-  const Status failure = Status::failure(ErrorCode::ResourceExhausted,
-                                         "one-shot capacity rejection");
+  const Status failure =
+      kind == PublicClientResponseKind::BusinessNotFound
+          ? Status::failure(ErrorCode::NotFound,
+                            "one-shot business object was not found")
+          : Status::failure(ErrorCode::ResourceExhausted,
+                            "one-shot capacity rejection");
   if (kind == PublicClientResponseKind::FailedSentinel) {
     return encode_protocol_error(failure);
   }
@@ -594,6 +606,10 @@ PublicClientObservation observe_public_client_response(
           request.value().method != Method::DaemonInfo) {
         return;
       }
+      if (kind == PublicClientResponseKind::CloseWithoutResponse) {
+        server_completed = true;
+        return;
+      }
       auto response = encode_public_client_response(kind, request.value());
       if (!response.ok() ||
           !write_frame(accepted.descriptor.get(), response.value()).ok()) {
@@ -607,7 +623,8 @@ PublicClientObservation observe_public_client_response(
   server.join();
   return PublicClientObservation{
       server_completed, info.ok(),
-      info.ok() ? ps::ErrorCode::Ok : info.status().code, client.connected()};
+      info.ok() ? ps::ErrorCode::Ok : info.status().code,
+      info.ok() ? std::string() : info.status().message, client.connected()};
 }
 
 }  // namespace
@@ -863,6 +880,15 @@ int main() {
   PS_IPC_CHECK(sentinel.status_code == ErrorCode::ResourceExhausted);
   PS_IPC_CHECK(!sentinel.connected_after_call);
 
+  const auto business_not_found = observe_public_client_response(
+      PublicClientResponseKind::BusinessNotFound);
+  PS_IPC_CHECK(business_not_found.server_completed);
+  PS_IPC_CHECK(!business_not_found.result_ok);
+  PS_IPC_CHECK(business_not_found.status_code == ErrorCode::NotFound);
+  PS_IPC_CHECK(business_not_found.status_message ==
+               "one-shot business object was not found");
+  PS_IPC_CHECK(business_not_found.connected_after_call);
+
   const auto wrong_request_id =
       observe_public_client_response(PublicClientResponseKind::WrongRequestId);
   PS_IPC_CHECK(wrong_request_id.server_completed);
@@ -876,6 +902,17 @@ int main() {
   PS_IPC_CHECK(!wrong_method.result_ok);
   PS_IPC_CHECK(wrong_method.status_code == ErrorCode::InvalidArgument);
   PS_IPC_CHECK(!wrong_method.connected_after_call);
+
+  const auto clean_response_eof = observe_public_client_response(
+      PublicClientResponseKind::CloseWithoutResponse);
+  PS_IPC_CHECK(clean_response_eof.server_completed);
+  PS_IPC_CHECK(!clean_response_eof.result_ok);
+  PS_IPC_CHECK(clean_response_eof.status_code == ErrorCode::Internal);
+  PS_IPC_CHECK(clean_response_eof.status_code != ErrorCode::NotFound);
+  PS_IPC_CHECK(clean_response_eof.status_message ==
+               "local peer closed before a response; request outcome is "
+               "unknown");
+  PS_IPC_CHECK(!clean_response_eof.connected_after_call);
   ps::ipc::internal::codec_test::install_decoder_count_observer(nullptr);
   return 0;
 }

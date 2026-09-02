@@ -97,6 +97,14 @@ connection 失效；普通 response 仍要求 exact nonzero request-id/method co
 Sentinel 是 best-effort server response：若 transport failure 阻止完整读取，Client
 返回该 transport failure。
 
+完整写出 request 后，若尚未收到任何 response byte 就发生 clean EOF，则 public
+Client 返回 `Internal` transport failure。Client 会 reset descriptor，并说明 peer 在
+response 前关闭、request outcome unknown；它不会暴露 private frame reader 的
+`NotFound`，因为 server 可能已经执行 request effect。Private reader 继续用
+`NotFound` 表示 server 观察到普通 client close；partial response EOF 仍为
+`InvalidArgument`；完整普通业务 `NotFound` response 或 failed sentinel 继续保留精确
+typed status。
+
 ## Ephemeral identifier
 
 `SessionId` 与 `JobId` 各包含两个 opaque uint64：

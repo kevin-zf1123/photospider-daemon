@@ -15,12 +15,13 @@ sibling source target 或 private kernel include path。
 
 - Binary codec test 覆盖精确 enum、range、UTF-8、duplicate field、trailing byte、
   request correlation 与 protocol-error sentinel。One-shot fake Unix server 证明 public
-  Client 返回完整读取的 sentinel typed status，并 reset descriptor。Table-driven boundary
-  matrix 覆盖 parameter、node、input、output、Value axis/facet、backend map、named Value、
-  fallback reason、operation timing 和 daemon method，并逐类检查
-  maximum-count/empty、one-byte-short、one-minimum-entry 与
-  semantic-maximum-plus-one。未安装的 count observer 证明 malformed node/timing 会在其
-  large reserve point 前拒绝。
+  Client 返回完整读取的 sentinel typed status 并 reset descriptor、保留完整普通业务
+  `NotFound`，同时把 request 已完整 decode 而任何 response 到达前的 clean EOF 映射为
+  disconnected `Internal` 与 unknown request outcome。Table-driven boundary matrix 覆盖
+  parameter、node、input、output、Value axis/facet、backend map、named Value、fallback
+  reason、operation timing 和 daemon method，并逐类检查 maximum-count/empty、
+  one-byte-short、one-minimum-entry 与 semantic-maximum-plus-one。未安装的 count observer
+  证明 malformed node/timing 会在其 large reserve point 前拒绝。
 - 真实 Unix-socket test 覆盖 oversized `0xffffffff`、truncated、duplicate、unknown-enum、
   invalid-UTF-8 与 trailing-byte request。完整十一字节 header 后发生 body EOF 时保留
   correlation；incomplete header 只使用 sentinel。Server 返回一个 typed failure 后关闭，
