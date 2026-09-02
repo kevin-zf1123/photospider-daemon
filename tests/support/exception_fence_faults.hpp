@@ -2,7 +2,18 @@
 
 #include <cstdint>
 
+namespace ps {
+struct Status;
+}
+
 namespace ps::ipc::test {
+
+/** @brief Test-only observer after shutdown acceptance and before encoding. */
+using ShutdownResponseReadyObserver = void (*)(bool accepted_shutdown);
+
+/** @brief Test-only observer after one real shutdown response write attempt. */
+using ShutdownResponseWriteObserver = void (*)(bool accepted_shutdown,
+                                               const Status& status);
 
 /** @brief Deterministic exception-fence points in the test-only runtime. */
 enum class ExceptionFenceFaultPoint : std::uint32_t {
@@ -14,6 +25,8 @@ enum class ExceptionFenceFaultPoint : std::uint32_t {
   ConnectionRegistration,
   /** @brief Throws after registration and before handler frame input. */
   HandlerPrimary,
+  /** @brief Throws after dispatch and before normal response encoding. */
+  ResponseEncode,
   /** @brief Throws before a handler catch constructs its diagnostic. */
   HandlerFailureStatus,
   /** @brief Throws before a best-effort protocol failure is encoded. */
@@ -52,6 +65,36 @@ void reset_exception_fence_faults() noexcept;
  */
 void arm_exception_fence_fault(ExceptionFenceFaultPoint point,
                                ExceptionFenceFaultAction action) noexcept;
+
+/**
+ * @brief Installs or clears deterministic shutdown-response observers.
+ * @param ready Callback after Service dispatch and acceptance capture.
+ * @param write Callback after a real normal-response write attempt.
+ * @throws Nothing.
+ * @note Install before starting handler threads and clear only after every
+ * handler joins. These callbacks exist only in the noninstalled test runtime.
+ */
+void install_shutdown_response_observers(
+    ShutdownResponseReadyObserver ready,
+    ShutdownResponseWriteObserver write) noexcept;
+
+/**
+ * @brief Invokes the installed post-dispatch response observer.
+ * @param accepted_shutdown Whether Service accepted daemon shutdown.
+ * @throws Any exception raised by the installed test observer.
+ * @note Production server objects contain no corresponding callback.
+ */
+void observe_shutdown_response_ready(bool accepted_shutdown);
+
+/**
+ * @brief Invokes the installed real-write outcome observer.
+ * @param accepted_shutdown Whether Service accepted daemon shutdown.
+ * @param status Exact product `write_frame` result.
+ * @throws Any exception raised by the installed test observer.
+ * @note Production server objects contain no corresponding callback.
+ */
+void observe_shutdown_response_write(bool accepted_shutdown,
+                                     const Status& status);
 
 /**
  * @brief Records one boundary hit and raises an armed one-shot exception.

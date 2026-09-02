@@ -196,10 +196,16 @@ Caller 只能通过 `job.submit` retry，并获得 distinct identifier。
 version、`unix-domain` transport、exact sorted method list、live Session/Job count 与
 fixed global concurrency，以及 fixed retained-Session bound。
 
-`daemon.shutdown` 先 ack，再停止 listener、interrupt active client connection，并让
-`photospiderd` 销毁 service。Service destruction 请求 cancellation、join fixed worker，
-并释放全部 Session、Job、result、GraphContext、kernel execution resource、descriptor
-与 socket node。下一个 process 从 empty registry 开始。
+`daemon.shutdown` 会在完整 success response 与所有 fault-capable operation 都完成 stage
+之后，于 no-throw Service commit 被接受。该 commit 会 atomically 关闭后续普通 admission
+并标记该 response 已接受；commit 前 dispatch failure 不会执行其中任何一项。并发 shutdown
+request 可以全部被接受，并收敛到相同 monotonic state。Server 在 response encoding 前保存
+acceptance，随后无论 acknowledgement 的结果如何，都从 handler 的共同 no-throw tail
+停止 listener。Encoding failure、real write failure 或 catch response 的 best-effort failure
+都不能撤销或搁置 accepted shutdown。未收到 success acknowledgement 的 client 必须把 request
+outcome 视为 unknown，即使 server 仍会完成已经接受的 stop。Service destruction 请求
+cancellation、join fixed worker，并释放全部 Session、Job、result、GraphContext、kernel
+execution resource、descriptor 与 socket node。下一个 process 从 empty registry 开始。
 
 POSIX executable 在构造 Server 或任何 worker 前阻塞 `SIGINT`/`SIGTERM`，并由专用
 `sigwait` thread 同步消费；该 thread 只请求同一 stop path。另一个预先阻塞、仅供

@@ -37,7 +37,11 @@ sibling source target 或 private kernel include path。
   deterministic post-bind construction failure。每个 asynchronous Server test 都使用
   fail-safe run guard，在 assertion return 或 exception 时先 request stop 再 join。
   Handler-count assertion 会先等待 active zero，再显式驱动一次 accept-loop reap，而不是
-  只依赖经过的时间。
+  只依赖经过的时间。只存在于 test runtime 的 response observer 会在 encoding 前 hold
+  已经接受的 shutdown、关闭真实 peer，并证明单个及四个并发 acknowledgement write 失败时，
+  server 仍会 stop、删除 socket，并 settle 每个 handler 与 descriptor。One-shot response-
+  encode `bad_alloc` 证明相同 stop guarantee；commit 前 dispatch fault 则证明普通 admission
+  会保持开放，直到后续 shutdown 被接受。
 - Transport test 证明即使 ambient `errno` 无关地残留，peer-uid rejection 仍只影响当前
   connection；正常 `request_stop` 成功，非 stop 的 fatal accept failure 保持 typed。
   它们检查 client、listener、accepted stream 与固定 parent descriptor 的

@@ -4,19 +4,23 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "ipc/codec.hpp"
 #include "ipc/frame.hpp"
 #include "ipc/unix_socket.hpp"
 #include "orchestration/service.hpp"
+#include "photospider/ipc/client.hpp"
 #include "server/server.hpp"
 #include "support/exception_fence_faults.hpp"
 #include "support/server_run_guard.hpp"
@@ -193,6 +197,397 @@ bool dispatch_double_fault_regression() {
          dispatch_close_double_fault(
              test::ExceptionFenceFaultAction::UnknownException,
              ps::ErrorCode::Internal);
+}
+
+/**
+ * @brief Proves shutdown dispatch commits only after the primary fault seam.
+ * @return True when failed shutdown leaves admission open and a later shutdown
+ * commits normally.
+ * @throws std::bad_alloc If Service or response staging allocation fails.
+ * @note The one-shot primary fault is injected after response staging but must
+ * precede both the admission fence and `shutdown_after_write` publication.
+ */
+bool shutdown_dispatch_commit_regression() {
+  test::reset_exception_fence_faults();
+  internal::Service service(internal::ServiceConfig{1U, 4U, 2U, false});
+  test::arm_exception_fence_fault(
+      test::ExceptionFenceFaultPoint::DispatchPrimary,
+      test::ExceptionFenceFaultAction::BadAlloc);
+
+  internal::Request first_shutdown;
+  first_shutdown.request_id = 201U;
+  first_shutdown.method = internal::Method::DaemonShutdown;
+  const internal::Response failed = service.dispatch(first_shutdown);
+  if (failed.status.ok() || failed.shutdown_after_write ||
+      failed.status.code != ps::ErrorCode::ResourceExhausted) {
+    test::reset_exception_fence_faults();
+    return false;
+  }
+
+  internal::Request info;
+  info.request_id = 202U;
+  info.method = internal::Method::DaemonInfo;
+  const internal::Response admitted = service.dispatch(info);
+  if (!admitted.status.ok() || admitted.daemon_info.protocol_version != 3U) {
+    test::reset_exception_fence_faults();
+    return false;
+  }
+
+  internal::Request second_shutdown;
+  second_shutdown.request_id = 203U;
+  second_shutdown.method = internal::Method::DaemonShutdown;
+  const internal::Response accepted = service.dispatch(second_shutdown);
+  const bool passed =
+      accepted.status.ok() && accepted.shutdown_after_write &&
+      test::exception_fence_fault_hits(
+          test::ExceptionFenceFaultPoint::DispatchPrimary) == 3U;
+  test::reset_exception_fence_faults();
+  return passed;
+}
+
+/**
+ * @brief Coordinates accepted shutdown responses before their real writes.
+ * @note Handler callbacks block only after Service acceptance; the test closes
+ * peer descriptors, then releases all callbacks to observe actual failures.
+ */
+class ShutdownResponseBarrier final {
+ public:
+  /**
+   * @brief Sets the exact number of shutdown responses to coordinate.
+   * @param expected Positive accepted-response count.
+   * @throws Nothing.
+   */
+  explicit ShutdownResponseBarrier(std::uint32_t expected) noexcept
+      : expected_(expected) {}
+
+  /**
+   * @brief Forbids duplicating synchronization state.
+   * @param other Source barrier that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  ShutdownResponseBarrier(const ShutdownResponseBarrier& other) = delete;
+  /**
+   * @brief Forbids assigning synchronization state.
+   * @param other Source barrier that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  ShutdownResponseBarrier& operator=(const ShutdownResponseBarrier& other) =
+      delete;
+  /**
+   * @brief Forbids moving address-stable callback state.
+   * @param other Source barrier that cannot be moved.
+   * @throws Nothing; the operation is deleted.
+   */
+  ShutdownResponseBarrier(ShutdownResponseBarrier&& other) = delete;
+  /**
+   * @brief Forbids move-assigning address-stable callback state.
+   * @param other Source barrier that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  ShutdownResponseBarrier& operator=(ShutdownResponseBarrier&& other) = delete;
+
+  /**
+   * @brief Blocks one accepted response until the test releases the barrier.
+   * @param accepted_shutdown Whether Service accepted this shutdown.
+   * @throws std::system_error If test synchronization fails.
+   * @note Non-shutdown and failed-shutdown responses return immediately.
+   */
+  void wait_after_accept(bool accepted_shutdown) {
+    if (!accepted_shutdown) {
+      return;
+    }
+    accepted_.fetch_add(1U, std::memory_order_acq_rel);
+    changed_.notify_all();
+    std::unique_lock<std::mutex> lock(mutex_);
+    changed_.wait(lock, [this] { return released_; });
+  }
+
+  /**
+   * @brief Waits until every expected shutdown response is held.
+   * @param timeout Maximum bounded wait.
+   * @return True when the exact expected count arrived before the deadline.
+   * @throws std::system_error If test synchronization fails.
+   */
+  bool wait_for_all(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, timeout, [this] {
+      return accepted_.load(std::memory_order_acquire) == expected_;
+    });
+  }
+
+  /**
+   * @brief Releases every held response callback exactly once.
+   * @throws Nothing; a synchronization failure leaves test teardown to the
+   * surrounding Server run guard.
+   */
+  void release() noexcept {
+    try {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        released_ = true;
+      }
+      changed_.notify_all();
+    } catch (...) {
+    }
+  }
+
+  /**
+   * @brief Records one real accepted-shutdown response write outcome.
+   * @param accepted_shutdown Whether the response accepted shutdown.
+   * @param status Exact `write_frame` result.
+   * @throws Nothing.
+   */
+  void observe_write(bool accepted_shutdown,
+                     const ps::Status& status) noexcept {
+    if (accepted_shutdown && !status.ok()) {
+      write_failures_.fetch_add(1U, std::memory_order_relaxed);
+    }
+  }
+
+  /**
+   * @brief Returns the number of accepted responses that reached the barrier.
+   * @return Monotonic accepted count.
+   * @throws Nothing.
+   */
+  [[nodiscard]] std::uint32_t accepted_count() const noexcept {
+    return accepted_.load(std::memory_order_acquire);
+  }
+
+  /**
+   * @brief Returns the number of observed real write failures.
+   * @return Monotonic failed-write count.
+   * @throws Nothing.
+   */
+  [[nodiscard]] std::uint32_t write_failure_count() const noexcept {
+    return write_failures_.load(std::memory_order_acquire);
+  }
+
+ private:
+  /** @brief Exact accepted-response count required to release the test. */
+  const std::uint32_t expected_;
+  /** @brief Serializes the release predicate and condition wait. */
+  std::mutex mutex_;
+  /** @brief Wakes the test and held response handlers. */
+  std::condition_variable changed_;
+  /** @brief Number of accepted responses that reached the hook. */
+  std::atomic<std::uint32_t> accepted_{0U};
+  /** @brief Number of accepted response writes that returned non-Ok. */
+  std::atomic<std::uint32_t> write_failures_{0U};
+  /** @brief Whether held handlers may attempt their real writes. */
+  bool released_ = false;
+};
+
+/** @brief Borrowed active shutdown-response barrier for test callbacks. */
+ShutdownResponseBarrier* g_shutdown_response_barrier = nullptr;
+
+/**
+ * @brief Bridges the test-runtime post-dispatch observer to the active barrier.
+ * @param accepted_shutdown Whether Service accepted daemon shutdown.
+ * @throws std::system_error If barrier synchronization fails.
+ */
+void wait_at_shutdown_response_barrier(bool accepted_shutdown) {
+  if (g_shutdown_response_barrier) {
+    g_shutdown_response_barrier->wait_after_accept(accepted_shutdown);
+  }
+}
+
+/**
+ * @brief Bridges the test-runtime real-write observer to the active barrier.
+ * @param accepted_shutdown Whether Service accepted daemon shutdown.
+ * @param status Exact product `write_frame` result.
+ * @throws Nothing.
+ */
+void record_shutdown_response_write(bool accepted_shutdown,
+                                    const ps::Status& status) noexcept {
+  if (g_shutdown_response_barrier) {
+    g_shutdown_response_barrier->observe_write(accepted_shutdown, status);
+  }
+}
+
+/**
+ * @brief Owns one process-global shutdown-response observer installation.
+ * @note Declare before Server so callbacks clear only after all handlers join.
+ */
+class ShutdownResponseObserverScope final {
+ public:
+  /**
+   * @brief Installs callbacks bound to one address-stable barrier.
+   * @param barrier Nonnull barrier that outlives this scope.
+   * @throws std::invalid_argument If `barrier` is null.
+   */
+  explicit ShutdownResponseObserverScope(ShutdownResponseBarrier* barrier) {
+    if (!barrier) {
+      throw std::invalid_argument("shutdown response barrier is null");
+    }
+    g_shutdown_response_barrier = barrier;
+    test::install_shutdown_response_observers(wait_at_shutdown_response_barrier,
+                                              record_shutdown_response_write);
+  }
+
+  /**
+   * @brief Clears test-runtime callbacks before the barrier retires.
+   * @throws Nothing.
+   */
+  ~ShutdownResponseObserverScope() noexcept {
+    test::install_shutdown_response_observers(nullptr, nullptr);
+    g_shutdown_response_barrier = nullptr;
+  }
+
+  /**
+   * @brief Forbids duplicate process-global observer ownership.
+   * @param other Source scope that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  ShutdownResponseObserverScope(const ShutdownResponseObserverScope& other) =
+      delete;
+  /**
+   * @brief Forbids assigning process-global observer ownership.
+   * @param other Source scope that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  ShutdownResponseObserverScope& operator=(
+      const ShutdownResponseObserverScope& other) = delete;
+  /**
+   * @brief Forbids moving one process-global callback installation.
+   * @param other Source scope that cannot be moved.
+   * @throws Nothing; the operation is deleted.
+   */
+  ShutdownResponseObserverScope(ShutdownResponseObserverScope&& other) = delete;
+  /**
+   * @brief Forbids move-assigning process-global callback ownership.
+   * @param other Source scope that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  ShutdownResponseObserverScope& operator=(
+      ShutdownResponseObserverScope&& other) = delete;
+};
+
+/**
+ * @brief Sends one complete shutdown request without reading its response.
+ * @param path Exact bound local socket path.
+ * @param request_id Nonzero request correlation id.
+ * @return Connected descriptor retained by the caller, or typed failure.
+ * @throws std::bad_alloc If request encoding allocation fails.
+ * @note The caller closes the descriptor only after the server acceptance
+ * barrier is reached, creating a deterministic real write failure.
+ */
+ps::Result<internal::UniqueDescriptor> send_shutdown_without_read(
+    const std::string& path, std::uint64_t request_id) {
+  auto connection = internal::connect_unix_socket(path);
+  if (!connection.ok()) {
+    return ps::Result<internal::UniqueDescriptor>(connection.status());
+  }
+  internal::Request request;
+  request.request_id = request_id;
+  request.method = internal::Method::DaemonShutdown;
+  auto encoded = internal::encode_request(request);
+  if (!encoded.ok()) {
+    return ps::Result<internal::UniqueDescriptor>(encoded.status());
+  }
+  const ps::Status written =
+      internal::write_frame(connection.value().get(), encoded.value());
+  if (!written.ok()) {
+    return ps::Result<internal::UniqueDescriptor>(written);
+  }
+  return ps::Result<internal::UniqueDescriptor>(connection.take_value());
+}
+
+/**
+ * @brief Exercises accepted shutdown after one or more peer-close ack failures.
+ * @param request_count Number of concurrently held accepted shutdowns.
+ * @return True when every real write fails and the server fully settles.
+ * @throws std::bad_alloc If test/server staging allocation fails.
+ * @throws std::system_error If server threads or synchronization fail.
+ * @note A bounded rescue stop runs only after recording a failed invariant, so
+ * teardown cannot mask whether accepted shutdown stopped the server itself.
+ */
+bool shutdown_write_failure_regression(std::uint32_t request_count) {
+  const std::string path = socket_path();
+  ShutdownResponseBarrier barrier(request_count);
+  ShutdownResponseObserverScope observer_scope(&barrier);
+  internal::ServerConfig config{
+      path, internal::ServiceConfig{1U, 8U, 2U, false}, 8, 8U, {}, {}};
+  internal::Server server(std::move(config));
+  ps::ipc::test::ServerRunGuard server_run(&server);
+  std::vector<internal::UniqueDescriptor> peers;
+  peers.reserve(request_count);
+  bool requests_sent = true;
+  for (std::uint32_t index = 0U; index < request_count; ++index) {
+    auto peer = send_shutdown_without_read(path, index + 1U);
+    if (!peer.ok()) {
+      requests_sent = false;
+      break;
+    }
+    peers.push_back(peer.take_value());
+  }
+  bool all_accepted = false;
+  if (requests_sent) {
+    all_accepted = barrier.wait_for_all(kHandlerCleanupTimeout);
+  }
+  for (auto& peer : peers) {
+    peer.reset();
+  }
+  barrier.release();
+  const bool completed =
+      all_accepted && server_run.ready_within(kHandlerCleanupTimeout);
+  if (!completed) {
+    server.request_stop();
+  }
+  const ps::Status run_status = server_run.join();
+  return requests_sent && all_accepted && completed && run_status.ok() &&
+         barrier.accepted_count() == request_count &&
+         barrier.write_failure_count() == request_count &&
+         server.active_handler_count() == 0U &&
+         server.active_connection_count_for_test() == 0U &&
+         server.retained_handler_count() == 0U && socket_node_absent(path);
+}
+
+/**
+ * @brief Exercises accepted shutdown when normal response encoding allocates.
+ * @return True when the client observes failure and the server still settles.
+ * @throws std::bad_alloc If test/server staging allocation fails.
+ * @throws std::system_error If the server test thread cannot start.
+ */
+bool shutdown_encode_failure_regression() {
+  test::reset_exception_fence_faults();
+  test::arm_exception_fence_fault(
+      test::ExceptionFenceFaultPoint::ResponseEncode,
+      test::ExceptionFenceFaultAction::BadAlloc);
+  const std::string path = socket_path();
+  internal::Server server(
+      internal::ServerConfig{path,
+                             internal::ServiceConfig{1U, 4U, 2U, false},
+                             4,
+                             2U,
+                             {},
+                             {}});
+  ps::ipc::test::ServerRunGuard server_run(&server);
+  ps::ipc::Client client;
+  const bool connected = client.connect(path).ok();
+  ps::Status shutdown = ps::Status::failure(ps::ErrorCode::Internal,
+                                            "shutdown client did not connect");
+  if (connected) {
+    shutdown = client.daemon_shutdown();
+  }
+  const bool completed =
+      connected && server_run.ready_within(kHandlerCleanupTimeout);
+  if (!completed) {
+    server.request_stop();
+  }
+  const ps::Status run_status = server_run.join();
+  const bool passed =
+      connected && !shutdown.ok() && completed && run_status.ok() &&
+      test::exception_fence_fault_hits(
+          test::ExceptionFenceFaultPoint::ResponseEncode) == 1U &&
+      server.active_handler_count() == 0U &&
+      server.active_connection_count_for_test() == 0U &&
+      server.retained_handler_count() == 0U && socket_node_absent(path);
+  test::reset_exception_fence_faults();
+  return passed;
 }
 
 /**
@@ -421,6 +816,10 @@ int main(int argc, char** argv) {
     return 2;
   }
   PS_IPC_CHECK(dispatch_double_fault_regression());
+  PS_IPC_CHECK(shutdown_dispatch_commit_regression());
+  PS_IPC_CHECK(shutdown_write_failure_regression(1U));
+  PS_IPC_CHECK(shutdown_write_failure_regression(4U));
+  PS_IPC_CHECK(shutdown_encode_failure_regression());
   PS_IPC_CHECK(registration_failure_regression());
   return 0;
 }

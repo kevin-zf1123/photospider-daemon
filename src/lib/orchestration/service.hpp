@@ -85,7 +85,10 @@ class Service final {
    * @param request Complete version-three request.
    * @return Correlated response with typed failure or method payload.
    * @throws Nothing; allocation and kernel exceptions are fenced into status.
-   * @note If diagnostic construction also fails, the response retains its
+   * @note Shutdown stages its response and all fault-capable work before one
+   * no-throw acceptance commit that closes later admission and publishes
+   * `shutdown_after_write`. A failed pre-commit dispatch leaves admission
+   * open. If diagnostic construction also fails, the response retains its
    * correlation, carries a non-Ok empty-message status, and contains no
    * success-only payload.
    */

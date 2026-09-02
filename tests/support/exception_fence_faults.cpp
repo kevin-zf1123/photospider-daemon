@@ -53,6 +53,12 @@ std::array<FaultSlot, kFaultPointCount>& fault_slots() noexcept {
   return slots;
 }
 
+/** @brief Installed post-dispatch response observer, or null. */
+std::atomic<ShutdownResponseReadyObserver> response_ready_observer{nullptr};
+
+/** @brief Installed real-response-write observer, or null. */
+std::atomic<ShutdownResponseWriteObserver> response_write_observer{nullptr};
+
 /**
  * @brief Converts a valid fault point to its fixed array index.
  * @param point Instrumented boundary.
@@ -66,11 +72,37 @@ std::size_t fault_index(ExceptionFenceFaultPoint point) noexcept {
 }  // namespace
 
 void reset_exception_fence_faults() noexcept {
+  response_ready_observer.store(nullptr, std::memory_order_release);
+  response_write_observer.store(nullptr, std::memory_order_release);
   for (FaultSlot& slot : fault_slots()) {
     slot.remaining.store(0U, std::memory_order_relaxed);
     slot.action.store(ExceptionFenceFaultAction::None,
                       std::memory_order_relaxed);
     slot.hits.store(0U, std::memory_order_relaxed);
+  }
+}
+
+void install_shutdown_response_observers(
+    ShutdownResponseReadyObserver ready,
+    ShutdownResponseWriteObserver write) noexcept {
+  response_write_observer.store(write, std::memory_order_relaxed);
+  response_ready_observer.store(ready, std::memory_order_release);
+}
+
+void observe_shutdown_response_ready(bool accepted_shutdown) {
+  const ShutdownResponseReadyObserver observer =
+      response_ready_observer.load(std::memory_order_acquire);
+  if (observer) {
+    observer(accepted_shutdown);
+  }
+}
+
+void observe_shutdown_response_write(bool accepted_shutdown,
+                                     const Status& status) {
+  const ShutdownResponseWriteObserver observer =
+      response_write_observer.load(std::memory_order_acquire);
+  if (observer) {
+    observer(accepted_shutdown, status);
   }
 }
 

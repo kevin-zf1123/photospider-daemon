@@ -126,6 +126,16 @@ connection、join 自有线程、释放 result 与 Session、只移除经过验�
 然后退出。Signal shutdown 使用同一 cleanup path。进程 restart 从空 registry
 开始。
 
+Shutdown acceptance 具有一个显式 Service linearization point。Dispatch 会先 stage 完整
+successful Response，并完成所有可能 allocate、throw 或触发 test fault 的 operation；然后
+只执行 no-throw 的 `shutting_down=true` 与 `shutdown_after_write=true` commit。该 commit
+前的 dispatch failure 会让两个 flag 都保持 false，并继续开放普通 admission；并发 shutdown
+request 可分别被接受，并收敛到同一个 monotonic fence。Server 会在 dispatch 后立即保存
+accepted shutdown。一旦保存，无论 acknowledgement encoding 失败、peer 让 real write
+失败、catch path 只能发送 best-effort failure，还是 acknowledgement 成功，handler 都会从
+共同 no-throw tail 调用幂等 `stop()`。因此，transport success 只决定 client 知道什么，
+绝不决定已经接受的 shutdown 是否完成。
+
 `photospiderd` 在构造 Server/service worker 前阻塞 `SIGINT`、`SIGTERM` 与一个仅供
 waiter 完成唤醒的 `SIGUSR1`。专用 thread 使用 `sigwait` 同步消费 blocked set；外部
 stop signal 只调用 thread-safe `Server::request_stop`。普通 RPC shutdown 设置

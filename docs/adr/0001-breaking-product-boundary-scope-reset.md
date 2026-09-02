@@ -143,6 +143,19 @@ blocked local connections, joins owned threads, releases results and Sessions,
 removes only the verified socket path, and exits. Signal shutdown uses the
 same cleanup path. Process restart begins with empty registries.
 
+Shutdown acceptance has one explicit Service linearization point. Dispatch
+first stages the complete successful Response and finishes every operation
+that may allocate, throw, or trigger a test fault. It then performs only the
+no-throw `shutting_down=true` and `shutdown_after_write=true` commit. A dispatch
+failure before that commit returns both flags false and leaves ordinary
+admission open; concurrent shutdown requests may each be accepted and converge
+on the same monotonic fence. The server captures accepted shutdown immediately
+after dispatch. Once captured, its handler invokes idempotent `stop()` from a
+common no-throw tail whether acknowledgement encoding fails, the peer makes the
+real write fail, a catch path can send only a best-effort failure, or the
+acknowledgement succeeds. Transport success therefore controls only what the
+client knows, never whether an already accepted shutdown completes.
+
 Before constructing Server or service workers, `photospiderd` blocks
 `SIGINT`, `SIGTERM`, and one waiter-only `SIGUSR1` completion wake. A dedicated
 thread synchronously consumes the blocked set with `sigwait`; external stop
