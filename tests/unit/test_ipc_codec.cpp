@@ -47,21 +47,159 @@ std::string socket_path() {
 }
 
 /**
- * @brief Serves one legal failed sentinel to the public Client.
- * @return True when the typed status is preserved and transport is reset.
- * @throws std::bad_alloc If fixture or protocol allocation fails.
- * @throws std::system_error If the one-shot responder thread cannot start.
- * @note The fake server reads one complete daemon.info request, emits only the
- * documented failed sentinel, then closes through descriptor RAII.
+ * @brief Closed failed-response variants served to the public Client.
+ *
+ * @note Every variant is a complete non-Ok response. Only `FailedSentinel`
+ * uses the protocol-error sentinel; the other variants deliberately violate
+ * one ordinary response-correlation component.
  */
-bool public_client_decodes_failed_sentinel() {
+enum class PublicClientResponseKind : std::uint8_t {
+  /** @brief Legal zero-id/daemon.info failed protocol sentinel. */
+  FailedSentinel,
+  /** @brief Ordinary response with a wrong nonzero request id. */
+  WrongRequestId,
+  /** @brief Ordinary response with the expected id but wrong method. */
+  WrongMethod,
+};
+
+/**
+ * @brief Owns one fake-server thread and its exceptional-path Client wakeup.
+ *
+ * The normal path joins explicitly after the public call. If setup, encoding,
+ * or result inspection throws, destruction first disconnects the Client so a
+ * responder blocked in request I/O observes EOF, then joins the thread.
+ *
+ * @note The referenced Client must outlive this owner. The responder never
+ * accesses the Client object itself.
+ */
+class PublicClientServerThread final {
+ public:
+  /**
+   * @brief Takes ownership of one joinable fake-server thread.
+   * @param client Nonnull Client used only to interrupt exceptional-path I/O.
+   * @param thread Joinable responder thread transferred to this owner.
+   * @throws Nothing.
+   * @note `client` must outlive this object.
+   */
+  PublicClientServerThread(ps::ipc::Client* client, std::thread thread) noexcept
+      : client_(client), thread_(std::move(thread)) {}
+
+  /**
+   * @brief Disconnects the Client if needed and joins the responder.
+   * @throws Nothing under the owner-thread and joinable-state invariants.
+   * @note Client disconnection is idempotent and occurs before a fallback join.
+   */
+  ~PublicClientServerThread() noexcept {
+    client_->disconnect();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+  /**
+   * @brief Forbids duplicating Client/thread cleanup ownership.
+   * @param other Source owner that cannot be copied.
+   * @throws Nothing; the operation is deleted.
+   */
+  PublicClientServerThread(const PublicClientServerThread& other) = delete;
+
+  /**
+   * @brief Forbids copy assignment of Client/thread cleanup ownership.
+   * @param other Source owner that cannot be assigned.
+   * @return No value; the operation is deleted.
+   * @throws Nothing; the operation is deleted.
+   */
+  PublicClientServerThread& operator=(const PublicClientServerThread& other) =
+      delete;
+
+  /**
+   * @brief Joins the responder after a completed public Client call.
+   * @throws std::system_error If the platform thread join fails.
+   * @note Repeated calls are harmless after the first successful join.
+   */
+  void join() {
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+ private:
+  /** @brief Borrowed Client used to wake request I/O during unwinding. */
+  ps::ipc::Client* client_;
+  /** @brief Sole ownership of the one-shot responder thread. */
+  std::thread thread_;
+};
+
+/**
+ * @brief Captures public Client behavior after one complete failed response.
+ *
+ * @note `server_completed` distinguishes a Client result from fixture setup or
+ * transport failure, making every correlation assertion independently
+ * falsifiable.
+ */
+struct PublicClientObservation final {
+  /** @brief Whether the responder validated the request and wrote its frame. */
+  bool server_completed = false;
+  /** @brief Whether `Client::daemon_info()` unexpectedly returned a value. */
+  bool result_ok = false;
+  /** @brief Returned failure category, or `Ok` for an unexpected value. */
+  ps::ErrorCode status_code = ps::ErrorCode::Ok;
+  /** @brief Descriptor ownership observed immediately after the public call. */
+  bool connected_after_call = false;
+};
+
+/**
+ * @brief Encodes one complete failed fake-server response.
+ * @param kind Legal sentinel or one ordinary correlation mismatch.
+ * @param request Completely decoded daemon.info request from the Client.
+ * @return Bounded response payload or typed fixture-encoding failure.
+ * @throws std::bad_alloc If response or diagnostic allocation fails.
+ * @note Ordinary mismatch variants use `encode_response`, remain non-Ok, and
+ * carry no success-only payload.
+ */
+ps::Result<std::vector<std::uint8_t>> encode_public_client_response(
+    PublicClientResponseKind kind, const ps::ipc::internal::Request& request) {
   using ps::ErrorCode;
   using ps::Status;
+  using ps::ipc::internal::encode_protocol_error;
+  using ps::ipc::internal::encode_response;
+  using ps::ipc::internal::Method;
+  using ps::ipc::internal::Response;
+
+  const Status failure = Status::failure(ErrorCode::ResourceExhausted,
+                                         "one-shot capacity rejection");
+  if (kind == PublicClientResponseKind::FailedSentinel) {
+    return encode_protocol_error(failure);
+  }
+
+  Response response;
+  response.request_id = request.request_id;
+  response.method = request.method;
+  response.status = failure;
+  if (kind == PublicClientResponseKind::WrongRequestId) {
+    response.request_id = request.request_id + 1U;
+  } else if (kind == PublicClientResponseKind::WrongMethod) {
+    response.method = Method::DaemonShutdown;
+  }
+  return encode_response(response);
+}
+
+/**
+ * @brief Runs one complete public daemon.info call against a fake Unix server.
+ * @param kind Failed response correlation served after the request is decoded.
+ * @return Explicit server, result, status, and connection observations.
+ * @throws std::bad_alloc If fixture, protocol, or result allocation fails.
+ * @throws std::system_error If the one-shot responder thread cannot start or
+ * join.
+ * @note The request traverses public Client, frame I/O, and the real codec. All
+ * descriptors use RAII; exceptional paths disconnect before joining.
+ */
+PublicClientObservation observe_public_client_response(
+    PublicClientResponseKind kind) {
   using ps::ipc::Client;
   using ps::ipc::internal::accept_same_user;
   using ps::ipc::internal::create_unix_listener;
   using ps::ipc::internal::decode_request;
-  using ps::ipc::internal::encode_protocol_error;
   using ps::ipc::internal::Method;
   using ps::ipc::internal::read_frame;
   using ps::ipc::internal::write_frame;
@@ -69,45 +207,44 @@ bool public_client_decodes_failed_sentinel() {
   const std::string path = socket_path();
   auto listener = create_unix_listener(path, 1);
   if (!listener.ok()) {
-    return false;
+    return {};
   }
   Client client;
   if (!client.connect(path).ok()) {
-    return false;
+    return {};
   }
 
-  bool server_ok = false;
-  std::thread server([&] {
+  bool server_completed = false;
+  PublicClientServerThread server(&client, std::thread([&] {
     try {
       auto accepted = accept_same_user(listener.value().descriptor.get());
       if (accepted.disposition !=
           ps::ipc::internal::AcceptDisposition::Accepted) {
         return;
       }
-      auto request = read_frame(accepted.descriptor.get());
-      if (!request.ok()) {
+      auto request_frame = read_frame(accepted.descriptor.get());
+      if (!request_frame.ok()) {
         return;
       }
-      auto decoded = decode_request(request.value());
-      if (!decoded.ok() || decoded.value().request_id != 1U ||
-          decoded.value().method != Method::DaemonInfo) {
+      auto request = decode_request(request_frame.value());
+      if (!request.ok() || request.value().request_id != 1U ||
+          request.value().method != Method::DaemonInfo) {
         return;
       }
-      auto sentinel = encode_protocol_error(Status::failure(
-          ErrorCode::ResourceExhausted, "one-shot capacity rejection"));
-      if (!sentinel.ok() ||
-          !write_frame(accepted.descriptor.get(), sentinel.value()).ok()) {
+      auto response = encode_public_client_response(kind, request.value());
+      if (!response.ok() ||
+          !write_frame(accepted.descriptor.get(), response.value()).ok()) {
         return;
       }
-      server_ok = true;
+      server_completed = true;
     } catch (...) {
     }
-  });
+  }));
   auto info = client.daemon_info();
   server.join();
-  return server_ok && !info.ok() &&
-         info.status().code == ErrorCode::ResourceExhausted &&
-         !client.connected();
+  return PublicClientObservation{
+      server_completed, info.ok(),
+      info.ok() ? ps::ErrorCode::Ok : info.status().code, client.connected()};
 }
 
 }  // namespace
@@ -116,7 +253,8 @@ bool public_client_decodes_failed_sentinel() {
  * @brief Exercises v3 request/response round trips and malformed frame fences.
  * @return Zero when all checks pass.
  * @throws std::bad_alloc If test setup allocation fails.
- * @throws std::system_error If the one-shot responder thread cannot start.
+ * @throws std::system_error If the one-shot responder thread cannot start or
+ * join.
  * @note Behavioral failures otherwise return nonzero through `PS_IPC_CHECK`.
  */
 int main() {
@@ -308,6 +446,25 @@ int main() {
   PS_IPC_CHECK(!moved_from_call.ok());
   PS_IPC_CHECK(moved_from_call.status().code == ErrorCode::InvalidArgument);
   PS_IPC_CHECK(!moved_client.connected());
-  PS_IPC_CHECK(public_client_decodes_failed_sentinel());
+  const auto sentinel =
+      observe_public_client_response(PublicClientResponseKind::FailedSentinel);
+  PS_IPC_CHECK(sentinel.server_completed);
+  PS_IPC_CHECK(!sentinel.result_ok);
+  PS_IPC_CHECK(sentinel.status_code == ErrorCode::ResourceExhausted);
+  PS_IPC_CHECK(!sentinel.connected_after_call);
+
+  const auto wrong_request_id =
+      observe_public_client_response(PublicClientResponseKind::WrongRequestId);
+  PS_IPC_CHECK(wrong_request_id.server_completed);
+  PS_IPC_CHECK(!wrong_request_id.result_ok);
+  PS_IPC_CHECK(wrong_request_id.status_code == ErrorCode::InvalidArgument);
+  PS_IPC_CHECK(!wrong_request_id.connected_after_call);
+
+  const auto wrong_method =
+      observe_public_client_response(PublicClientResponseKind::WrongMethod);
+  PS_IPC_CHECK(wrong_method.server_completed);
+  PS_IPC_CHECK(!wrong_method.result_ok);
+  PS_IPC_CHECK(wrong_method.status_code == ErrorCode::InvalidArgument);
+  PS_IPC_CHECK(!wrong_method.connected_after_call);
   return 0;
 }
