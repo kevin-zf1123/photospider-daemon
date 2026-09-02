@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <future>
 #include <stdexcept>
 #include <utility>
@@ -87,6 +88,18 @@ class ServerRunGuard final {
       joined_ = true;
     }
     return outcome_;
+  }
+
+  /**
+   * @brief Waits a bounded interval for the blocking run call to finish.
+   * @param timeout Maximum wait duration.
+   * @return True when `join()` can complete without blocking.
+   * @throws Nothing.
+   * @note Observation does not request stop or consume the run outcome.
+   */
+  bool ready_within(std::chrono::milliseconds timeout) const noexcept {
+    return future_.valid() &&
+           future_.wait_for(timeout) == std::future_status::ready;
   }
 
  private:

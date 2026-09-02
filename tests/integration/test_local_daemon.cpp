@@ -602,6 +602,61 @@ int main() {
   }
 
   {
+    const std::string rejection_path = socket_path();
+    internal::Server server(
+        internal::ServerConfig{rejection_path,
+                               internal::ServiceConfig{1U, 4U, 2U, false},
+                               4,
+                               4U,
+                               {},
+                               {}});
+    internal::reject_next_peer_for_test(EBADF);
+    ps::ipc::test::ServerRunGuard server_run(&server);
+    auto rejected = internal::connect_unix_socket(rejection_path);
+    PS_IPC_CHECK(rejected.ok());
+    auto rejected_eof = internal::read_frame(rejected.value().get());
+    PS_IPC_CHECK(!rejected_eof.ok());
+    PS_IPC_CHECK(rejected_eof.status().code == ErrorCode::NotFound);
+    PS_IPC_CHECK(!server_run.ready_within(std::chrono::milliseconds(100)));
+
+    Client healthy;
+    PS_IPC_CHECK(healthy.connect(rejection_path).ok());
+    PS_IPC_CHECK(healthy.daemon_info().ok());
+    PS_IPC_CHECK(healthy.daemon_shutdown().ok());
+    PS_IPC_CHECK(server_run.join().ok());
+  }
+
+  {
+    const std::string stop_path = socket_path();
+    internal::Server server(
+        internal::ServerConfig{stop_path,
+                               internal::ServiceConfig{1U, 4U, 2U, false},
+                               4,
+                               4U,
+                               {},
+                               {}});
+    ps::ipc::test::ServerRunGuard server_run(&server);
+    server.request_stop();
+    PS_IPC_CHECK(server_run.join().ok());
+  }
+
+  {
+    const std::string failure_path = socket_path();
+    internal::Server server(
+        internal::ServerConfig{failure_path,
+                               internal::ServiceConfig{1U, 4U, 2U, false},
+                               4,
+                               4U,
+                               {},
+                               {}});
+    internal::fail_next_accept_for_test(EIO);
+    ps::ipc::test::ServerRunGuard server_run(&server);
+    const ps::Status& failure = server_run.join();
+    PS_IPC_CHECK(!failure.ok());
+    PS_IPC_CHECK(failure.code == ErrorCode::Internal);
+  }
+
+  {
     const std::string malformed_path = socket_path();
     internal::Server server(
         internal::ServerConfig{malformed_path,

@@ -3,7 +3,6 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <cerrno>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -431,9 +430,12 @@ Server::~Server() noexcept = default;
  * @copydetails Server::run
  */
 Status Server::run() {
-  if (!impl_ || impl_->stopping.load(std::memory_order_acquire)) {
+  if (!impl_) {
     return Status::failure(ErrorCode::InvalidArgument,
-                           "local server is already stopped");
+                           "local server has no runtime state");
+  }
+  if (impl_->stopping.load(std::memory_order_acquire)) {
+    return Status::success();
   }
   Status outcome = Status::success();
   while (!impl_->stopping.load(std::memory_order_acquire)) {
@@ -442,12 +444,14 @@ Status Server::run() {
       break;
     }
     auto connection = accept_same_user(listener);
-    if (!connection.ok()) {
-      if (impl_->stopping.load(std::memory_order_acquire) || errno == EBADF ||
-          errno == EINVAL) {
-        break;
-      }
-      outcome = connection.status();
+    if (impl_->stopping.load(std::memory_order_acquire)) {
+      break;
+    }
+    if (connection.disposition == AcceptDisposition::PeerRejected) {
+      continue;
+    }
+    if (connection.disposition == AcceptDisposition::FatalFailure) {
+      outcome = std::move(connection.status);
       impl_->stop();
       break;
     }
@@ -455,7 +459,7 @@ Status Server::run() {
     if (impl_->active_handlers.load(std::memory_order_acquire) >=
         impl_->config.maximum_active_connections) {
       write_protocol_failure(
-          connection.value().get(),
+          connection.descriptor.get(),
           Status::failure(ErrorCode::ResourceExhausted,
                           "active connection capacity is exhausted"));
       continue;
@@ -472,7 +476,7 @@ Status Server::run() {
         HandlerRecord& record = impl_->handlers.back();
         record.thread =
             std::thread([state = impl_.get(), finished = record.finished,
-                         owned = connection.take_value()]() mutable {
+                         owned = std::move(connection.descriptor)]() mutable {
               HandlerCompletion completion(&state->active_handlers, finished);
               state->serve_connection(std::move(owned));
             });

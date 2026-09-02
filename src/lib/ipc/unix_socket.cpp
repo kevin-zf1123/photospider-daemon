@@ -7,6 +7,9 @@
 #include <unistd.h>
 
 #include <cerrno>
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+#include <atomic>
+#endif
 #include <cstddef>
 #include <cstring>
 #include <new>
@@ -15,6 +18,14 @@
 
 namespace ps::ipc::internal {
 namespace {
+
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/** @brief One-shot ambient errno for a synthetic peer rejection. */
+std::atomic<int> g_rejected_peer_errno{0};
+
+/** @brief One-shot errno for a synthetic fatal accept failure. */
+std::atomic<int> g_accept_failure_errno{0};
+#endif
 
 /** @brief Parent pathname plus one final socket entry name. */
 struct SocketPathParts final {
@@ -235,42 +246,59 @@ Result<UniqueDescriptor> prepare_stream(UniqueDescriptor descriptor) {
 }
 
 /**
- * @brief Verifies a connected peer belongs to the current effective uid.
- * @param descriptor Connected local stream descriptor.
- * @return Success only after a supported platform peer-uid check passes.
- * @throws std::bad_alloc If a failure diagnostic allocation fails.
- * @note Unsupported platforms fail closed instead of accepting an unchecked
- * peer.
+ * @brief Typed result of one private peer-credential verification.
+ * @note This object carries no descriptor ownership; the accept owner closes
+ * every rejected or failed stream.
  */
-Status verify_same_user(int descriptor) {
+struct PeerCredentialResult final {
+  /** @brief Explicit accepted/rejected/fatal credential disposition. */
+  AcceptDisposition disposition = AcceptDisposition::FatalFailure;
+  /** @brief Success only for `Accepted`; otherwise typed failure. */
+  Status status;
+};
+
+/**
+ * @brief Verifies peer uid and classifies rejection separately from failure.
+ * @param descriptor Prepared connected local stream.
+ * @return Explicit accepted, uid-rejected, or fatal credential disposition.
+ * @throws std::bad_alloc If a failure diagnostic allocation fails.
+ * @note Supported-platform uid mismatch is the sole `PeerRejected` mapping;
+ * syscall and unsupported-platform failures remain fatal.
+ */
+PeerCredentialResult verify_same_user(int descriptor) {
 #if defined(__APPLE__) || defined(__FreeBSD__)
   uid_t uid = 0;
   gid_t gid = 0;
   if (::getpeereid(descriptor, &uid, &gid) != 0) {
-    return errno_status("could not read local peer identity");
+    return {AcceptDisposition::FatalFailure,
+            errno_status("could not read local peer identity")};
   }
   static_cast<void>(gid);
   if (uid != ::geteuid()) {
-    return Status::failure(ErrorCode::InvalidArgument,
-                           "local peer uid does not match daemon uid");
+    return {AcceptDisposition::PeerRejected,
+            Status::failure(ErrorCode::InvalidArgument,
+                            "local peer uid does not match daemon uid")};
   }
 #elif defined(__linux__)
   struct ucred credentials{};
   socklen_t size = sizeof(credentials);
   if (::getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &credentials, &size) !=
       0) {
-    return errno_status("could not read local peer identity");
+    return {AcceptDisposition::FatalFailure,
+            errno_status("could not read local peer identity")};
   }
   if (credentials.uid != ::geteuid()) {
-    return Status::failure(ErrorCode::InvalidArgument,
-                           "local peer uid does not match daemon uid");
+    return {AcceptDisposition::PeerRejected,
+            Status::failure(ErrorCode::InvalidArgument,
+                            "local peer uid does not match daemon uid")};
   }
 #else
   static_cast<void>(descriptor);
-  return Status::failure(ErrorCode::InvalidArgument,
-                         "local peer uid verification is unavailable");
+  return {AcceptDisposition::FatalFailure,
+          Status::failure(ErrorCode::InvalidArgument,
+                          "local peer uid verification is unavailable")};
 #endif
-  return Status::success();
+  return {AcceptDisposition::Accepted, Status::success()};
 }
 
 }  // namespace
@@ -597,22 +625,43 @@ Result<BoundUnixListener> create_unix_listener(const std::string& path,
  * @brief Implements same-user connection acceptance.
  * @copydetails accept_same_user
  */
-Result<UniqueDescriptor> accept_same_user(int listener) {
+SameUserAcceptResult accept_same_user(int listener) {
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  const int injected_accept_errno =
+      g_accept_failure_errno.exchange(0, std::memory_order_acq_rel);
+  if (injected_accept_errno != 0) {
+    errno = injected_accept_errno;
+    return {AcceptDisposition::FatalFailure,
+            {},
+            errno_status("local accept failed")};
+  }
+#endif
   auto accepted = accept_stream(listener);
   if (!accepted.ok()) {
-    return Result<UniqueDescriptor>(accepted.status());
+    return {AcceptDisposition::FatalFailure, {}, accepted.status()};
   }
   UniqueDescriptor owned = accepted.take_value();
   auto prepared = prepare_stream(std::move(owned));
   if (!prepared.ok()) {
-    return Result<UniqueDescriptor>(prepared.status());
+    return {AcceptDisposition::FatalFailure, {}, prepared.status()};
   }
   owned = prepared.take_value();
-  Status status = verify_same_user(owned.get());
-  if (!status.ok()) {
-    return Result<UniqueDescriptor>(std::move(status));
+#if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+  const int injected_peer_errno =
+      g_rejected_peer_errno.exchange(0, std::memory_order_acq_rel);
+  if (injected_peer_errno != 0) {
+    errno = injected_peer_errno;
+    return {AcceptDisposition::PeerRejected,
+            {},
+            Status::failure(ErrorCode::InvalidArgument,
+                            "local peer uid does not match daemon uid")};
   }
-  return Result<UniqueDescriptor>(std::move(owned));
+#endif
+  PeerCredentialResult peer = verify_same_user(owned.get());
+  if (peer.disposition != AcceptDisposition::Accepted) {
+    return {peer.disposition, {}, std::move(peer.status)};
+  }
+  return {AcceptDisposition::Accepted, std::move(owned), Status::success()};
 }
 
 /**
@@ -626,6 +675,22 @@ void shutdown_descriptor(int descriptor) noexcept {
 }
 
 #if defined(PHOTOSPIDER_DAEMON_TEST_RUNTIME)
+/**
+ * @brief Implements one-shot peer-rejection injection.
+ * @copydetails reject_next_peer_for_test
+ */
+void reject_next_peer_for_test(int ambient_errno) noexcept {
+  g_rejected_peer_errno.store(ambient_errno, std::memory_order_release);
+}
+
+/**
+ * @brief Implements one-shot fatal-accept injection.
+ * @copydetails fail_next_accept_for_test
+ */
+void fail_next_accept_for_test(int error_number) noexcept {
+  g_accept_failure_errno.store(error_number, std::memory_order_release);
+}
+
 /**
  * @brief Implements deterministic pre-arm allocation failure injection.
  * @copydetails

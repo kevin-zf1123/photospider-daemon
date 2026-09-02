@@ -87,9 +87,9 @@ remote-service product。
 
 Malformed 或 oversized frame 会收到一个 typed protocol-error response，随后 connection
 关闭。若存在可恢复的合法 v3 header，则保留其 request id 与 method；否则使用文档化
-correlation sentinel：request id 为零且 method 为 `daemon.info`。Unix
-client/listener/accepted 与固定 parent descriptor 均为 close-on-exec；embedded-NUL path
-byte 会在任何 prefix 被使用前拒绝。
+correlation sentinel：request id 为零且 method 为 `daemon.info`。完整收到的 failed
+sentinel 会返回其 typed status 并断开 Client。Unix client/listener/accepted 与固定 parent
+descriptor 均为 close-on-exec；embedded-NUL path byte 会在任何 prefix 被使用前拒绝。
 Sanitizer 与手动 fuzz 命令见[测试与验证](../development/zh/Testing-and-Validation.zh.md)。
 
 重置前 IPC v2 source 只能从 Git 历史和 `pre-breaking-scope-reset-2026-09-01`

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ipc/frame.hpp"
@@ -176,7 +177,11 @@ ps::Result<ps::ipc::internal::UniqueDescriptor> open_child_product_stream(
   }
   auto accepted = ps::ipc::internal::accept_same_user(listener_descriptor);
   ::close(listener_descriptor);
-  return accepted;
+  return accepted.disposition == ps::ipc::internal::AcceptDisposition::Accepted
+             ? ps::Result<ps::ipc::internal::UniqueDescriptor>(
+                   std::move(accepted.descriptor))
+             : ps::Result<ps::ipc::internal::UniqueDescriptor>(
+                   std::move(accepted.status));
 }
 
 /**
@@ -357,13 +362,21 @@ bool supervised_peer_close_write(const std::string& executable,
   inherited_listener.reset();
   child_control.reset();
 
-  auto peer_result = role == ChildStreamRole::ConnectedClient
-                         ? accept_same_user(listener.descriptor.get())
-                         : connect_unix_socket(path);
-  if (!peer_result.ok()) {
-    return false;
+  UniqueDescriptor peer;
+  if (role == ChildStreamRole::ConnectedClient) {
+    auto accepted = accept_same_user(listener.descriptor.get());
+    if (accepted.disposition !=
+        ps::ipc::internal::AcceptDisposition::Accepted) {
+      return false;
+    }
+    peer = std::move(accepted.descriptor);
+  } else {
+    auto connected = connect_unix_socket(path);
+    if (!connected.ok()) {
+      return false;
+    }
+    peer = connected.take_value();
   }
-  UniqueDescriptor peer = peer_result.take_value();
   if (!read_control_byte(parent_control.get(), 'R')) {
     return false;
   }
@@ -401,11 +414,12 @@ bool cloexec_descriptor_regression(const std::string& executable) {
     return false;
   }
   auto accepted_result = accept_same_user(listener.descriptor.get());
-  if (!accepted_result.ok()) {
+  if (accepted_result.disposition !=
+      ps::ipc::internal::AcceptDisposition::Accepted) {
     return false;
   }
   UniqueDescriptor client = client_result.take_value();
-  UniqueDescriptor accepted = accepted_result.take_value();
+  UniqueDescriptor accepted = std::move(accepted_result.descriptor);
   const int descriptors[] = {listener.descriptor.get(),
                              listener.socket_node.parent_descriptor(),
                              client.get(), accepted.get()};
