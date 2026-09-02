@@ -21,6 +21,10 @@ Session 是一个进程和一个用户 trust domain 内的逻辑 namespace。Job
 Queued -> Running -> Succeeded | Failed | Cancelled
 ```
 
+`session.close` 会移除仍由 global queue 拥有的 matching work，并在本地完成其既有状态
+迁移。它只会 cooperative cancel 并等待已被 worker pop 的 matching work；无关
+Session 的 Running Job 绝不会延迟 close 或 Session capacity 复用。
+
 Restart 清空全部 Session、Job 与 result。不存在自动 retry、attempt identity、
 checkpoint、recovery、durable result、receipt、tenant 或 remote service。
 

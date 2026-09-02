@@ -139,10 +139,14 @@ full registry returns `ResourceExhausted` and creates nothing.
 
 ### `session.close`
 
-The request contains a `SessionId`. Close atomically wins against new submit,
-removes all matching Job records/results, requests cancellation, waits for
-their terminal settlement, then removes the Session and kernel context. A
-later close returns `NotFound`.
+The request contains a `SessionId`. Close atomically wins against new submit.
+Under the global registry lock it removes matching records still present in the
+worker queue, then synchronously completes their existing
+`Queued -> Running -> Cancelled` transitions. Matching records already popped
+by a worker retain cooperative cancellation, stale-publication fences, and a
+terminal wait. No unrelated Session Job participates in that wait. Close then
+removes the Session/kernel context and releases capacity; a later close returns
+`NotFound`.
 
 ## Jobs
 
@@ -168,8 +172,9 @@ and terminal Status. Observation is non-destructive.
 
 Cancellation is idempotent for a terminal Job. A queued Job records the
 cooperative request and still transitions through `Running` before
-`Cancelled`. A running callback may drain, but accepted cancellation prevents
-result publication.
+`Cancelled`. Session close may perform the same transition synchronously after
+exactly removing queued ownership. A running callback may drain, but accepted
+cancellation prevents result publication.
 
 ### `job.result`
 
@@ -250,7 +255,8 @@ same-uid writer racing exactly between them.
 - Frame, version, enum, UTF-8, count, length, overflow, and trailing-data
   validation occurs before state mutation.
 - Session creation compiles before registry publication.
-- Session close is atomic against submit and rejects later result publication.
+- Session close is atomic against submit, removes queued ownership exactly,
+  waits only for its own popped work, and rejects later result publication.
 - Job state is monotonic and cancellation cannot publish success afterward.
 - Worker/callback exceptions are fenced into one Job failure.
 - Descriptor, worker, GraphContext, result, and queue ownership settles exactly

@@ -25,7 +25,13 @@ never a sibling source target or private kernel include path.
   uses only the sentinel. The server returns one typed failure and closes
   without state mutation or declared-length allocation.
 - Session tests cover positive `maximum_sessions`, no-allocation/no-id
-  backpressure, close/reuse, exact cleanup, and concurrent admission.
+  backpressure, close/reuse, exact cleanup, and concurrent admission. A
+  single-worker regression holds Session A Running while Session B remains
+  Queued, then proves closing B completes within a short deadline, leaves A
+  Running, removes B's Job, and immediately reuses Session capacity. Its
+  timeout path cancels A before collecting the close future so failures clean
+  up promptly; subsequent daemon shutdown cannot retain a close handler that
+  waits for A's natural delay.
 - Server tests cover the positive active-handler bound, typed backpressure,
   sequential runtime reaping, exception fencing, shutdown join, and
   deterministic post-bind construction failures with descriptor/node cleanup

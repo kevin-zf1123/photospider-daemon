@@ -41,12 +41,15 @@ compiler/optimizer/planner code、不序列化内部 IR，也不会成为 kernel
 authorization scope、sandbox 或 resource-isolation boundary。
 
 `session.create` 通过已安装公开 API 创建新的 kernel `GraphContext`。
-`session.close` 会拒绝新 submit、取消未完成 Job、等待其有界清理、释放全部临时
-result 并销毁 context。Daemon restart 清空所有 Session。
+`session.close` 会拒绝新 submit、取消未完成 Job、移除仍由 global queue 拥有的
+matching record，只等待已被 worker pop 的 matching work，释放全部临时 result 并销毁
+context。Queue removal 会同步完成既有 `Queued -> Running -> Cancelled` lifecycle；
+无关 Session 的 Running Job 不参与该等待。Daemon restart 清空所有 Session。
 
 Session retention 具有一个正值、进程全局的 `maximum_sessions` bound。Admission 在构造
 graph/compiler 或消耗 identifier 前检查容量；registry 满时返回 `ResourceExhausted`。
-Close 精确释放一个 slot，因此后续 create 可复用容量，但不会复用 identifier。
+Close 在自身 record settle 后精确释放一个 slot，因此后续 create 可复用容量，但不会
+复用 identifier，也不会等待无关 execution。
 
 ### 临时 Job
 
