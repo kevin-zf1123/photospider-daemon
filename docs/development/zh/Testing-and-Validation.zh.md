@@ -52,6 +52,12 @@ sibling source target 或 private kernel include path。
   `PhotospiderDaemon::client`。专用 `BUILD_SHARED_LIBS=ON` package gate 还证明该
   target 保持为可用 static archive，且不创建 shared client ABI。
 
+Nested package consumer 暴露 generator-aware 的
+`run_photospider_daemon_consumer` target，其 command 使用 executable target-file
+expression。Outer gate 会传递精确 generator、存在时的 platform/toolset 与 active
+configuration，随后 build 该 run target。因此 single-config 与 multi-config layout
+都不需要猜测 build root、configuration directory、executable suffix 或 bundle path。
+
 ## 产品与 test runtime 分离
 
 Installed `PhotospiderDaemon::client` 与正常 `photospiderd` executable 始终使用不含
