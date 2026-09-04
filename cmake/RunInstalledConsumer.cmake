@@ -1,8 +1,12 @@
 # Installs the daemon package and verifies an external public client consumer.
 set(_install_prefix "${PHOTOSPIDER_DAEMON_BINARY_DIR}/consumer-install")
 set(_consumer_binary "${PHOTOSPIDER_DAEMON_BINARY_DIR}/consumer-build")
+set(_version_probe_root
+    "${PHOTOSPIDER_DAEMON_BINARY_DIR}/package-version-probes")
 
-file(REMOVE_RECURSE "${_install_prefix}" "${_consumer_binary}")
+file(
+  REMOVE_RECURSE "${_install_prefix}" "${_consumer_binary}"
+                 "${_version_probe_root}")
 
 set(_config_args)
 if(PHOTOSPIDER_BUILD_CONFIG)
@@ -103,3 +107,40 @@ execute_process(
 if(NOT _build_result EQUAL 0)
   message(FATAL_ERROR "PhotospiderDaemon consumer build or runtime failed")
 endif()
+
+function(photospider_check_package_version package_name requested_version
+         expected_result)
+  string(TOLOWER "${package_name}" _package_slug)
+  string(REPLACE "." "_" _version_slug "${requested_version}")
+  set(_version_probe_binary
+      "${_version_probe_root}/${_package_slug}-${_version_slug}-${expected_result}")
+  execute_process(
+    COMMAND
+      "${CMAKE_COMMAND}"
+      ${_generator_args}
+      -S "${PHOTOSPIDER_DAEMON_SOURCE_DIR}/tests/version_probe"
+      -B "${_version_probe_binary}"
+      "-DPS_VERSION_PROBE_PACKAGE:STRING=${package_name}"
+      "-DPS_VERSION_PROBE_VERSION:STRING=${requested_version}"
+      "-DPS_VERSION_PROBE_EXPECT:STRING=${expected_result}"
+      "-DPhotospider_DIR:PATH=${PHOTOSPIDER_KERNEL_PACKAGE_DIR}"
+      "-DPhotospiderDaemon_DIR:PATH=${_installed_libdir}/cmake/PhotospiderDaemon"
+      "-DCMAKE_BUILD_TYPE:STRING=${PHOTOSPIDER_BUILD_CONFIG}"
+    RESULT_VARIABLE _version_probe_result
+    OUTPUT_VARIABLE _version_probe_output
+    ERROR_VARIABLE _version_probe_error)
+  string(CONCAT _version_probe_diagnostic "${_version_probe_output}"
+                                         "${_version_probe_error}")
+  if(NOT _version_probe_result EQUAL 0)
+    message(
+      FATAL_ERROR
+        "${package_name} ${requested_version} ${expected_result} probe failed:\n${_version_probe_diagnostic}"
+    )
+  endif()
+endfunction()
+
+foreach(_package_name IN ITEMS Photospider PhotospiderDaemon)
+  photospider_check_package_version("${_package_name}" 0.2 compatible)
+  photospider_check_package_version("${_package_name}" 0.1 incompatible)
+  photospider_check_package_version("${_package_name}" 0.3 incompatible)
+endforeach()

@@ -22,7 +22,9 @@ Daemon CI：
    prefix；
 3. 只使用该 prefix 配置 daemon；
 4. build、运行 CTest、install、运行 external typed-client consumer，并在清除所有受支持
-   loader environment override 后执行 installed `photospiderd --help`；
+   loader environment override 后执行 installed `photospiderd --help`；同一 isolated
+   install 会接受两个 package 的 exact-minor `0.2` request，并拒绝 cross-minor `0.1`
+   与 newer-minimum `0.3` request；
 5. 运行 binary-codec、socket ownership/SIGPIPE、real-process signal 与 RPC shutdown、
    Session/Job/cancellation/result/restart、executable-help 与 installed-client test；
 6. 针对相同 installed-kernel boundary 分别运行 bounded Clang ASAN/TSAN
