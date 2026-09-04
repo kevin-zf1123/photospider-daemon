@@ -119,6 +119,15 @@ rejected before any prefix can be used. See
 [Testing and Validation](docs/development/Testing-and-Validation.md) for
 sanitizer and manual fuzz commands.
 
+## Delivery status
+
+Public GitHub Issues maintain live delivery state.
+[#15 daemon-local-orchestration](https://github.com/users/kevin-zf1123/projects/15)
+is the maintainer operational view of those Issues. The checked-in
+[Current Development Program](docs/development/Current-Development-Program.md)
+records the audited baseline, current milestone, critical path, and active
+leaf Issues without changing ADR 0001 or the IPC v3 contract.
+
 The pre-reset IPC v2 source is available only through Git history and
 `pre-breaking-scope-reset-2026-09-01`; it is not an active compatibility
 contract.

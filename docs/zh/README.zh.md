@@ -108,5 +108,14 @@ sentinel 会返回其 typed status 并断开 Client。Unix client/listener/accep
 descriptor 均为 close-on-exec；embedded-NUL path byte 会在任何 prefix 被使用前拒绝。
 Sanitizer 与手动 fuzz 命令见[测试与验证](../development/zh/Testing-and-Validation.zh.md)。
 
+## Delivery status
+
+公开 GitHub Issue 维护 live delivery state。
+[#15 daemon-local-orchestration](https://github.com/users/kevin-zf1123/projects/15)
+是这些 Issue 的 maintainer operational view。Checked-in
+[当前开发计划](../development/zh/Current-Development-Program.zh.md)记录 audited
+baseline、当前 milestone、critical path 与 active leaf Issue，且不修改 ADR 0001 或
+IPC v3 contract。
+
 重置前 IPC v2 source 只能从 Git 历史和 `pre-breaking-scope-reset-2026-09-01`
 取得；它不是 active compatibility contract。

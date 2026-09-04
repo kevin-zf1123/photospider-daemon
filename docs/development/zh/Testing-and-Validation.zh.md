@@ -91,6 +91,10 @@ sibling source target 或 private kernel include path。
   要求 Linux RPATH/RUNPATH 或 Darwin `LC_RPATH` 同时包含 loader-relative daemon libdir
   与实际 non-system imported kernel directory。Client 继续是不受 `BUILD_SHARED_LIBS`
   影响的 static archive，不创建 shared client ABI。
+  Positive Client consumer 运行后，同一 isolated install 还会配置 package-version
+  probe。`Photospider 0.2` 与 `PhotospiderDaemon 0.2` 都必须接受 `0.2` request，并拒绝
+  cross-minor `0.1` 与 newer-minimum `0.3` request。较旧的 cross-minor case 用于区分
+  `SameMinorVersion` 与更宽的 compatibility mode。
 
 Nested package consumer 暴露 generator-aware 的
 `run_photospider_daemon_consumer` target，其 command 使用 executable target-file

@@ -114,6 +114,11 @@ never a sibling source target or private kernel include path.
   `LC_RPATH` to include the loader-relative daemon libdir plus the actual
   non-system imported kernel directory. The client remains a static archive
   independent of `BUILD_SHARED_LIBS` and creates no shared client ABI.
+  After the positive Client consumer runs, the same isolated install also
+  configures package-version probes. Both `Photospider 0.2` and
+  `PhotospiderDaemon 0.2` must accept a `0.2` request and reject cross-minor
+  `0.1` plus newer-minimum `0.3` requests. The older cross-minor case
+  distinguishes `SameMinorVersion` from wider compatibility modes.
 
 The nested package consumer exposes a generator-aware
 `run_photospider_daemon_consumer` target whose command uses the executable
