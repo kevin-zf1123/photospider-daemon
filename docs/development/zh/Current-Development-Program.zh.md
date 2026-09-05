@@ -1,8 +1,8 @@
 # 当前开发计划
 
-- 快照日期：2026-09-04
+- 快照日期：2026-09-05
 - 已审计实现 baseline：`main@602e89ab6ec63350d504bb7ae538294ce237e023`
-- 当前 milestone：S1 per-Job binding 与实用 ephemeral result
+- 当前重点：安装包兼容维护；保留的 S1 新功能按需启动
 
 ## 角色与权威
 
@@ -34,7 +34,7 @@ item 均关闭后，#3 才在本表中成为 delivered；在此之前，以它�
 它在 Linux 与 macOS 上通过 static/shared installed kernel，以及 focused ASAN 与 TSAN
 job。
 
-## 当前 milestone
+## 保留的 S1 功能范围
 
 S1 把 caller-owned runtime Value 投影到 Job，并返回普通 image 或 tensor result；不引入
 persistence、artifact identity、recovery 或 remote transport。
@@ -70,8 +70,23 @@ completion gate、named fixture 或 vertical、精确 test 与 oracle、non-goal
 completion evidence。Parent Issue 只作为 index 与 closure aggregator，不携带
 `ready-for-agent`。
 
+任务状态、授权终点和决策/实现完成条件见[任务协作](Task-Collaboration.zh.md)。
+
 ## 更新规则
 
 Audited baseline、当前 milestone、critical path 或 blocked reason 变化时更新本快照。
 普通 implementation detail 保留在所属 Issue 与 test 中。每项 status claim 必须引用已
 完成 code 与 test；unchecked item 不定义当前行为。
+
+## 已接受的排期方向，2026-09-05
+
+维护者已接受以嵌入式图像计算为主线，本仓库新增功能按实际需求启动。
+#9 至 #12 的任务及技术依赖保留；#11 仍无开始依赖。排期等待不计为技术阻塞
+或完成。上文 S1 继续描述保留的功能范围，当前不自动启动这些新增功能。
+
+Kernel #256 已形成 Float32 图像、普通标量与逐端口规则的修订契约，具体
+operation ABI v3 已被明确接受。#10 继续依赖 kernel 契约，Session/wire 规则未改。
+Kernel 0.3 需要最小 consumer/package 协调迁移，或另行批准的版本和 CI
+选版策略；延期新增 IPC 功能不免除该维护。当前未修改代码、版本或 CI，
+决策交付由 [kernel #256](https://github.com/kevin-zf1123/photospider/issues/256)
+跟踪；实现及新增 daemon 功能继续由各自任务处理。

@@ -1,8 +1,8 @@
 # Current Development Program
 
-- Snapshot date: 2026-09-04
+- Snapshot date: 2026-09-05
 - Audited implementation baseline: `main@602e89ab6ec63350d504bb7ae538294ce237e023`
-- Current milestone: S1 per-Job bindings and practical ephemeral results
+- Current focus: installed-package compatibility; retained S1 features are demand-driven
 
 ## Role and authority
 
@@ -37,7 +37,7 @@ The latest baseline CI was
 It passed on Linux and macOS against static and shared installed kernels, plus
 the focused ASAN and TSAN jobs.
 
-## Current milestone
+## Retained S1 feature backlog
 
 S1 projects caller-owned runtime Values into Jobs and returns ordinary image or
 tensor results without introducing persistence, artifact identity, recovery,
@@ -76,9 +76,29 @@ integration dependency, completion gate, named fixture or vertical, exact
 tests and oracle, non-goals, and expected completion evidence. Parent Issues
 are indexes and closure aggregators and do not carry `ready-for-agent`.
 
+For task status, authorization endpoints and decision/implementation completion,
+see [Task Collaboration](Task-Collaboration.md).
+
 ## Update rule
 
 Update this snapshot when the audited baseline, current milestone, critical
 path, or blocked reason changes. Ordinary implementation details remain in the
 owning Issue and tests. Every status claim must cite completed code and tests;
 an unchecked item does not define current behavior.
+
+## Accepted scheduling direction, 2026-09-05
+
+The maintainer accepted embedded image computation as the main direction and
+demand-driven new daemon features. #9 through #12 and their technical
+dependencies remain; #11 still has no start dependency. Scheduling deferral
+is neither technical blockage nor completion. The S1 above remains the retained
+feature scope; it does not automatically start that feature work.
+
+Kernel #256 now has revised Float32 image, ordinary-scalar and per-port
+contracts; its concrete operation ABI v3 has been accepted. #10 remains
+dependent on the kernel contract; Session/wire rules are unchanged. Kernel 0.3
+requires minimal coordinated consumer/package maintenance or a separately
+approved supported-version/CI-selection policy. Deferring new IPC features
+does not waive that maintenance. No code, versions or CI changed. Decision
+delivery is tracked in [kernel #256](https://github.com/kevin-zf1123/photospider/issues/256);
+implementation and new daemon features remain separate tasks.
