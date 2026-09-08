@@ -654,7 +654,8 @@ class JobRegistry final {
    * @param record Shared record retained across namespace close.
    * @throws Nothing across the worker boundary.
    * @note Cancellation is rechecked before compilation, before execution, and
-   * before result publication. The noninstalled test runtime may hold the
+   * before result publication. IPC v3 supplies no runtime bindings.
+   * The noninstalled test runtime may hold the
    * boundary after Running publication without changing production objects.
    */
   void execute(const std::shared_ptr<JobRecord>& record) noexcept {
@@ -694,7 +695,7 @@ class JobRegistry final {
         return;
       }
       auto executed = execution_->execute(
-          compiled.value().plan, record->cancellation.token(),
+          compiled.value().plan, {}, record->cancellation.token(),
           ExecutionOptions{record->options.maximum_parallelism});
       if (!executed.ok()) {
         if (executed.status().code == ErrorCode::Cancelled ||

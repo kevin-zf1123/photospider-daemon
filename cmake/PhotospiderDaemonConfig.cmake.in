@@ -1,7 +1,7 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-find_dependency(Photospider 0.2 CONFIG COMPONENTS kernel)
+find_dependency(Photospider 0.4 CONFIG COMPONENTS kernel)
 find_dependency(Threads)
 
 set(PhotospiderDaemon_client_FOUND TRUE)

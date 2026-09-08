@@ -115,9 +115,8 @@ never a sibling source target or private kernel include path.
   non-system imported kernel directory. The client remains a static archive
   independent of `BUILD_SHARED_LIBS` and creates no shared client ABI.
   After the positive Client consumer runs, the same isolated install also
-  configures package-version probes. Both `Photospider 0.2` and
-  `PhotospiderDaemon 0.2` must accept a `0.2` request and reject cross-minor
-  `0.1` plus newer-minimum `0.3` requests. The older cross-minor case
+  configures package-version probes. `Photospider 0.4` accepts `0.4` and rejects `0.2`/`0.3`;
+  `PhotospiderDaemon 0.2` accepts `0.2` and rejects `0.1`/`0.3`. The older cross-minor case
   distinguishes `SameMinorVersion` from wider compatibility modes.
 
 The nested package consumer exposes a generator-aware

@@ -229,12 +229,12 @@ class Encoder final {
 
   /**
    * @brief Appends uint32 length-framed bytes.
-   * @param value Exact owned byte vector.
+   * @param value Borrowed bytes valid until this synchronous copy returns.
    * @throws CodecFailure If the vector or complete frame is oversized.
    * @throws std::bad_alloc If payload or diagnostic allocation fails.
    * @note Empty vectors are encoded with a zero length.
    */
-  void bytes(const std::vector<std::uint8_t>& value) {
+  void bytes(ByteView value) {
     if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
       throw CodecFailure(ErrorCode::ResourceExhausted,
                          "wire byte vector exceeds uint32");
@@ -790,13 +790,18 @@ ParameterValue decode_parameter(Decoder* decoder) {
  * @param document Public compiler source model.
  * @throws CodecFailure If counts, text, or complete payload are invalid.
  * @throws std::bad_alloc If payload growth fails.
- * @note Compiler semantic validation remains a daemon-side operation.
+ * @note Compiler semantic validation remains a daemon-side operation. Kernel
+ * schema 2 is used with no declarations; IPC v3 accepts only node-output edges
+ * and rejects runtime-binding sources instead of silently dropping them.
  */
 void encode_document(Encoder* encoder, const WorkflowDocument& document) {
   if (document.nodes.size() > 65536U || document.outputs.size() > 4096U) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "workflow document count exceeds wire bounds");
   }
+  if (!document.inputs.empty())
+    throw CodecFailure(ErrorCode::InvalidArgument,
+                       "IPC v3 does not carry workflow input declarations");
   encoder->u32(document.schema_version);
   encoder->u32(static_cast<std::uint32_t>(document.nodes.size()));
   for (const WorkflowNode& node : document.nodes) {
@@ -808,8 +813,12 @@ void encode_document(Encoder* encoder, const WorkflowDocument& document) {
     encoder->text(node.operation, 1024U);
     encoder->u32(static_cast<std::uint32_t>(node.inputs.size()));
     for (const WorkflowInput& input : node.inputs) {
-      encoder->u64(input.source_node);
-      encoder->text(input.source_port, 64U);
+      const auto* source = std::get_if<WorkflowNodeOutput>(&input);
+      if (!source)
+        throw CodecFailure(ErrorCode::InvalidArgument,
+                           "IPC v3 accepts only node-output edges");
+      encoder->u64(source->source_node);
+      encoder->text(source->source_port, 64U);
     }
     encoder->u32(static_cast<std::uint32_t>(node.parameters.size()));
     for (const auto& parameter : node.parameters) {
@@ -869,7 +878,8 @@ WorkflowDocument decode_document(Decoder* decoder) {
 #endif
     node.inputs.reserve(input_count);
     for (std::uint32_t input = 0U; input < input_count; ++input) {
-      node.inputs.push_back(WorkflowInput{decoder->u64(), decoder->text(64U)});
+      node.inputs.push_back(
+          WorkflowNodeOutput{decoder->u64(), decoder->text(64U)});
     }
     const std::uint32_t parameter_count = decoder->u32();
     if (parameter_count > 1024U) {
@@ -919,13 +929,21 @@ WorkflowDocument decode_document(Decoder* decoder) {
  * @param value Valid public runtime Value.
  * @throws CodecFailure If Value shape/facets or payload bounds are invalid.
  * @throws std::bad_alloc If payload growth fails.
- * @note No durable result identity or internal execution object is encoded.
+ * @note IPC v3 carries UInt8/Int64/Float64 and zero storage origins only.
+ * Unsupported kernel views fail explicitly; no pointers/leases are serialized.
+ * The byte view is synchronously copied into the bounded wire payload.
  */
 void encode_value(Encoder* encoder, const Value& value) {
   if (!value.valid() || value.descriptor().shape.size() > 8U) {
     throw CodecFailure(ErrorCode::InvalidArgument,
                        "result contains an invalid Value");
   }
+  if (value.descriptor().element_type == ElementType::Float32 ||
+      std::any_of(value.layout().origin.begin(), value.layout().origin.end(),
+                  [](std::uint64_t origin) { return origin != 0; }))
+    throw CodecFailure(
+        ErrorCode::InvalidArgument,
+        "Value type or storage origin is not supported by IPC v3");
   encoder->u32(static_cast<std::uint32_t>(value.descriptor().element_type));
   encoder->u8(static_cast<std::uint8_t>(value.descriptor().shape.size()));
   for (std::uint64_t extent : value.descriptor().shape) {
@@ -947,7 +965,7 @@ void encode_value(Encoder* encoder, const Value& value) {
   for (const ValueFacet& facet : value.facets()) {
     encoder->text(facet.key, 256U);
     encoder->u32(facet.version);
-    encoder->bytes(facet.payload);
+    encoder->bytes(ByteView(facet.payload.data(), facet.payload.size()));
   }
   encoder->bytes(value.bytes());
 }

@@ -9,12 +9,14 @@ endif()
 if(PS_VERSION_PROBE_PACKAGE STREQUAL "Photospider")
   find_package(Photospider ${PS_VERSION_PROBE_VERSION} CONFIG QUIET
                COMPONENTS kernel)
+  set(_expected_version "0.4.0")
   set(_probe_found "${Photospider_FOUND}")
   set(_probe_version "${Photospider_VERSION}")
   set(_probe_versions "${Photospider_CONSIDERED_VERSIONS}")
 elseif(PS_VERSION_PROBE_PACKAGE STREQUAL "PhotospiderDaemon")
   find_package(PhotospiderDaemon ${PS_VERSION_PROBE_VERSION} CONFIG QUIET
                COMPONENTS client)
+  set(_expected_version "0.2.0")
   set(_probe_found "${PhotospiderDaemon_FOUND}")
   set(_probe_version "${PhotospiderDaemon_VERSION}")
   set(_probe_versions "${PhotospiderDaemon_CONSIDERED_VERSIONS}")
@@ -23,10 +25,10 @@ else()
 endif()
 
 if(PS_VERSION_PROBE_EXPECT STREQUAL "compatible")
-  if(NOT _probe_found OR NOT _probe_version STREQUAL "0.2.0")
+  if(NOT _probe_found OR NOT _probe_version STREQUAL "${_expected_version}")
     message(
       FATAL_ERROR
-        "${PS_VERSION_PROBE_PACKAGE} ${PS_VERSION_PROBE_VERSION} was not resolved to installed version 0.2.0"
+        "${PS_VERSION_PROBE_PACKAGE} ${PS_VERSION_PROBE_VERSION} was not resolved to installed version ${_expected_version}"
     )
   endif()
 else()
@@ -36,7 +38,7 @@ else()
         "${PS_VERSION_PROBE_PACKAGE} unexpectedly accepted ${PS_VERSION_PROBE_VERSION}"
     )
   endif()
-  if(NOT _probe_versions STREQUAL "0.2.0")
+  if(NOT _probe_versions STREQUAL "${_expected_version}")
     message(
       FATAL_ERROR
         "${PS_VERSION_PROBE_PACKAGE} considered unexpected versions: ${_probe_versions}"

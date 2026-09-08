@@ -390,7 +390,7 @@ ps::WorkflowDocument document() {
       ps::WorkflowNode{1U, "core.constant", {}, {{"value", 3.0}}},
       ps::WorkflowNode{2U,
                        "core.identity",
-                       {ps::WorkflowInput{1U, "value"}},
+                       {ps::WorkflowNodeOutput{1U, "value"}},
                        {{"label", std::string("roundtrip")}}},
   };
   value.outputs = {ps::WorkflowOutput{"value", 2U, "value"}};
@@ -697,6 +697,24 @@ int main() {
   PS_IPC_CHECK(decoded.value().document.nodes.size() == 2U);
   PS_IPC_CHECK(decoded.value().document.outputs.front().name == "value");
 
+  PS_IPC_CHECK(decoded.value().document.schema_version == 2);
+  PS_IPC_CHECK(std::holds_alternative<ps::WorkflowNodeOutput>(
+      decoded.value().document.nodes[1].inputs[0]));
+  auto unsupported_request = request;
+  unsupported_request.document.inputs.push_back({1,
+                                                 "input",
+                                                 {ElementType::Float64, {1}},
+                                                 Region::whole({1}),
+                                                 {0, {8}},
+                                                 {}});
+  PS_IPC_CHECK(encode_request(unsupported_request).status().code ==
+               ErrorCode::InvalidArgument);
+  unsupported_request = request;
+  unsupported_request.document.nodes[1].inputs[0] =
+      ps::WorkflowInputReference{1};
+  PS_IPC_CHECK(encode_request(unsupported_request).status().code ==
+               ErrorCode::InvalidArgument);
+
   for (const auto& contract : kCountContractExpectations) {
     PS_IPC_CHECK(!ps::ipc::internal::codec_test::decoder_count_fits(
         contract.kind, contract.semantic_maximum, 0U));
@@ -799,6 +817,23 @@ int main() {
   PS_IPC_CHECK(
       decoded_response.value().execution_result.diagnostics.plan_digest ==
       "0123456789abcdef");
+
+  auto unsupported_response = response;
+  auto regional = Value::create({ElementType::UInt8, {4}}, Region({{2, 1}}),
+                                {0, {1}, {2}}, {7});
+  PS_IPC_CHECK(regional.ok());
+  unsupported_response.execution_result.values["regional"] =
+      regional.take_value();
+  PS_IPC_CHECK(encode_response(unsupported_response).status().code ==
+               ErrorCode::InvalidArgument);
+  unsupported_response = response;
+  auto binary32 = Value::create({ElementType::Float32, {1}}, Region::whole({1}),
+                                {0, {4}}, {0, 0, 0, 0});
+  PS_IPC_CHECK(binary32.ok());
+  unsupported_response.execution_result.values["float32"] =
+      binary32.take_value();
+  PS_IPC_CHECK(encode_response(unsupported_response).status().code ==
+               ErrorCode::InvalidArgument);
 
   std::vector<std::uint8_t> wrong_version = encoded.value();
   wrong_version[0] = 2U;
