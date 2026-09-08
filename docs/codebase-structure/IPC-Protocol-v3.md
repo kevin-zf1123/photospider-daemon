@@ -135,19 +135,24 @@ keys, or persistent identities.
 ## Workflow and result values
 
 `session.create` carries one bounded public `WorkflowDocument`: schema version,
-nodes, operation keys, ordered input edges, tagged scalar parameters, and named
+nodes, operation keys, ordered node-output edges, tagged scalar parameters, and named
 outputs. The daemon decodes source only, creates `GraphContext`, and validates
 it through the installed public `Compiler`. It never serializes semantic IR,
 optimized IR, physical plan fields, callback/native handles, or DSO paths.
+The installed 0.4 kernel requires schema 2. This wire subset has no workflow
+input declarations or runtime bindings; the encoder rejects either source
+form rather than silently omitting it. Compiler validation rejects old schemas.
 
 `job.result` encodes sorted named public `Value` objects. Each Value includes
-element type, rank/shape, Region intervals, byte offset/strides, zero to 64
+UInt8/Int64/Float64 element type, rank/shape, Region intervals, byte offset/strides, zero to 64
 versioned facets (bounded key/version/payload), and bounded immutable bytes.
 The response also carries raw execution timing, selected backends, transfer
 counts/bytes, peak live bytes, fallback reasons, operation timings, and
 non-security plan/result digest text. Decode republishes each Value through
 public bounds/type/shape/Region/layout/facet validation; no partial result is
-visible after failure.
+visible after failure. Kernel storage origins must be zero for this wire
+representation; nonzero origins and Float32 are rejected on encode. ByteView
+ownership stays local and its bytes are copied before encode returns.
 
 ## Sessions
 

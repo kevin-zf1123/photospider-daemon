@@ -293,7 +293,7 @@ ps::WorkflowDocument delayed_document() {
       ps::WorkflowNode{1U, "core.constant", {}, {{"value", 7.0}}},
       ps::WorkflowNode{2U,
                        "core.delay",
-                       {ps::WorkflowInput{1U, "value"}},
+                       {ps::WorkflowNodeOutput{1U, "value"}},
                        {{"milliseconds", kDelayedJobMilliseconds}}},
   };
   document.outputs = {ps::WorkflowOutput{"value", 2U, "value"}};

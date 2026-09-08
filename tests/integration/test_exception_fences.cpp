@@ -48,11 +48,11 @@ ps::WorkflowDocument addition_document() {
   document.nodes = {
       ps::WorkflowNode{1U, "core.constant", {}, {{"value", 1.0}}},
       ps::WorkflowNode{2U, "core.constant", {}, {{"value", 2.0}}},
-      ps::WorkflowNode{
-          3U,
-          "math.add",
-          {ps::WorkflowInput{1U, "value"}, ps::WorkflowInput{2U, "value"}},
-          {}},
+      ps::WorkflowNode{3U,
+                       "math.add",
+                       {ps::WorkflowNodeOutput{1U, "value"},
+                        ps::WorkflowNodeOutput{2U, "value"}},
+                       {}},
   };
   document.outputs = {ps::WorkflowOutput{"sum", 3U, "value"}};
   return document;

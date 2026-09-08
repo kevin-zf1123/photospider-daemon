@@ -1143,11 +1143,11 @@ ps::WorkflowDocument addition_document(double left, double right) {
   document.nodes = {
       ps::WorkflowNode{1U, "core.constant", {}, {{"value", left}}},
       ps::WorkflowNode{2U, "core.constant", {}, {{"value", right}}},
-      ps::WorkflowNode{
-          3U,
-          "math.add",
-          {ps::WorkflowInput{1U, "value"}, ps::WorkflowInput{2U, "value"}},
-          {}},
+      ps::WorkflowNode{3U,
+                       "math.add",
+                       {ps::WorkflowNodeOutput{1U, "value"},
+                        ps::WorkflowNodeOutput{2U, "value"}},
+                       {}},
   };
   document.outputs = {ps::WorkflowOutput{"sum", 3U, "value"}};
   return document;
@@ -1166,7 +1166,7 @@ ps::WorkflowDocument delayed_document(std::int64_t milliseconds) {
       ps::WorkflowNode{1U, "core.constant", {}, {{"value", 7.0}}},
       ps::WorkflowNode{2U,
                        "core.delay",
-                       {ps::WorkflowInput{1U, "value"}},
+                       {ps::WorkflowNodeOutput{1U, "value"}},
                        {{"milliseconds", milliseconds}}},
   };
   document.outputs = {ps::WorkflowOutput{"value", 2U, "value"}};
