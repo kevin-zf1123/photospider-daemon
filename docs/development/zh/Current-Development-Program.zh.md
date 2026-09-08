@@ -1,8 +1,8 @@
 # 当前开发计划
 
-- 快照日期：2026-09-05
-- 已审计实现 baseline：`main@602e89ab6ec63350d504bb7ae538294ce237e023`
-- 当前重点：安装包兼容维护；保留的 S1 新功能按需启动
+- 快照日期：2026-09-09
+- 已审计实现 baseline：`53ec2ca`（安装 kernel 0.4），前序 main 为 `b2babab`
+- 当前重点：kernel 0.4 安装消费；新 IPC 功能继续按需启动
 
 ## 角色与权威
 
@@ -19,20 +19,22 @@ authority，也不构成 completion gate。
 
 ## S0 结算 baseline
 
-已审计实现已经具备 #2 与 #4 的 scope。#3 的 package policy 已实现，本次结算补充其缺少的
-直接 same-minor probe。只有目标 commit 的 `daemon-ci` 成功，且 live Issue 与 Project
-item 均关闭后，#3 才在本表中成为 delivered；在此之前，以它们的 open 状态为准。
+S0 的 #2/#3/#4 已结算：九方法 IPC v3、受限 Session/Job 生命周期、取消、释放、
+shutdown/restart loss 和隔离安装消费继续作为基线。
 
-| Issue | 当前证据与结算条件 |
-| --- | --- |
-| [#2](https://github.com/kevin-zf1123/photospider-daemon/issues/2) | 已交付：installed-kernel mapping、精确九方法 IPC v3、bounded Session/Job lifecycle、cancellation、result release、shutdown 与 restart loss |
-| [#3](https://github.com/kevin-zf1123/photospider-daemon/issues/3) | 既有 contract：`Photospider 0.2` kernel component、same-minor compatibility 与 public-only dependency。结算条件：目标 `daemon-ci` 验证 `tests/version_probe/` 中的 exact-minor 与两个 cross-minor probe，随后关闭 Issue 与 Project item。 |
-| [#4](https://github.com/kevin-zf1123/photospider-daemon/issues/4) | 已交付：隔离 kernel install、Linux/macOS static/shared matrix、installed daemon client、lifecycle test、ASAN 与 TSAN |
+## Kernel 0.4 消费维护
 
-最新 baseline CI 是
-[`daemon-ci` run 38](https://github.com/kevin-zf1123/photospider-daemon/actions/runs/33720331110)。
-它在 Linux 与 macOS 上通过 static/shared installed kernel，以及 focused ASAN 与 TSAN
-job。
+[#15](https://github.com/kevin-zf1123/photospider-daemon/issues/15) 在 53ec2ca 实现，
+位于 kernel S2 #263/#264/#210/#211/#265/#266 之后。Daemon/Client 针对安装的 kernel
+0.4 重建；schema 2 使用 tagged node output，执行显式提供空 bindings。保留 daemon
+package 0.2 和 IPC v3。Codec 拒绝不支持的 declaration/reference、Float32 和非零
+storage origin；借用字节复制到有界 payload。不增加逐 Job bindings 或 bulk/流式结果协议。
+
+Static kernel 验证通过全部 14 项 runtime 加修复后的安装消费者；shared kernel 通过
+15/15。覆盖 codec 拒绝、Session/Job 生命周期、取消、socket 所有权、进程信号、异常
+边界、loader path，以及独立的 kernel/daemon minor-version probe。两仓独立审查在
+kernel 修复后未发现剩余 blocker/required。受保护 matching-branch CI、Codex bot、
+合并和 Issue/Project 结算记录在 #15 及其 PR；本地验证不单独构成交付 gate。
 
 ## 保留的 S1 功能范围
 
@@ -84,9 +86,5 @@ Audited baseline、当前 milestone、critical path 或 blocked reason 变化时
 #9 至 #12 的任务及技术依赖保留；#11 仍无开始依赖。排期等待不计为技术阻塞
 或完成。上文 S1 继续描述保留的功能范围，当前不自动启动这些新增功能。
 
-Kernel #256 已形成 Float32 图像、普通标量与逐端口规则的修订契约，具体
-operation ABI v3 已被明确接受。#10 继续依赖 kernel 契约，Session/wire 规则未改。
-Kernel 0.3 需要最小 consumer/package 协调迁移，或另行批准的版本和 CI
-选版策略；延期新增 IPC 功能不免除该维护。当前未修改代码、版本或 CI，
-决策交付由 [kernel #256](https://github.com/kevin-zf1123/photospider/issues/256)
-跟踪；实现及新增 daemon 功能继续由各自任务处理。
+Kernel ADR 0016 提供已接受的 binding/image 契约，ADR 0017 提供 S2 区域执行与存储。
+本次维护消费安装的 0.4。#10/#11/#12 继续由独立决策和实现范围推进，不因兼容维护而关闭。

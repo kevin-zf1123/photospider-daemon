@@ -1,8 +1,8 @@
 # Current Development Program
 
-- Snapshot date: 2026-09-05
-- Audited implementation baseline: `main@602e89ab6ec63350d504bb7ae538294ce237e023`
-- Current focus: installed-package compatibility; retained S1 features are demand-driven
+- Snapshot date: 2026-09-09
+- Audited implementation baseline: `53ec2ca` (installed kernel 0.4), following `main@b2babab`
+- Current focus: kernel 0.4 installed consumption; new IPC features remain demand-driven
 
 ## Role and authority
 
@@ -20,22 +20,27 @@ completion.
 
 ## S0 settlement baseline
 
-The audited implementation already supplies the #2 and #4 scopes. The #3
-package policy is implemented, and this settlement adds its missing direct
-same-minor probes. The #3 row becomes delivered only after the target commit's
-`daemon-ci` succeeds and its live Issue and Project item are closed; until
-then, their open state governs.
+S0 Issues #2, #3 and #4 are settled: nine-method IPC v3, bounded Session/Job
+lifecycle, cancellation, release, shutdown/restart loss and isolated installed
+consumption remain the baseline.
 
-| Issue | Current evidence and settlement condition |
-| --- | --- |
-| [#2](https://github.com/kevin-zf1123/photospider-daemon/issues/2) | Delivered: installed-kernel mapping, exact nine-method IPC v3, bounded Session/Job lifecycle, cancellation, result release, shutdown, and restart loss |
-| [#3](https://github.com/kevin-zf1123/photospider-daemon/issues/3) | Existing contract: `Photospider 0.2` kernel component, same-minor compatibility, and public-only dependency. Settlement condition: target `daemon-ci` verifies the exact-minor and two cross-minor probes under `tests/version_probe/`, then the Issue and Project item close. |
-| [#4](https://github.com/kevin-zf1123/photospider-daemon/issues/4) | Delivered: isolated kernel install, Linux/macOS static/shared matrix, installed daemon client, lifecycle tests, ASAN, and TSAN |
+## Kernel 0.4 consumer maintenance
 
-The latest baseline CI was
-[`daemon-ci` run 38](https://github.com/kevin-zf1123/photospider-daemon/actions/runs/33720331110).
-It passed on Linux and macOS against static and shared installed kernels, plus
-the focused ASAN and TSAN jobs.
+[#15](https://github.com/kevin-zf1123/photospider-daemon/issues/15) is implemented
+in `53ec2ca`, following kernel S2 #263/#264/#210/#211/#265/#266. The daemon and
+Client rebuild against installed kernel 0.4; source schema 2 uses tagged node
+outputs and execution supplies explicit empty bindings. Daemon package 0.2 and
+IPC v3 remain. Codec entry rejects unsupported declarations/references, Float32
+and nonzero storage origins; borrowed bytes are copied into the bounded payload.
+No per-Job binding or bulk/streamed result protocol is added.
+
+Static-kernel validation passed all 14 runtime tests plus the corrected installed
+consumer; shared-kernel validation passed 15/15. Coverage includes codec rejection,
+Session/Job lifecycle, cancellation, socket ownership, process signals, exception
+fences, loader paths and separate kernel/daemon minor-version probes. Independent
+two-repository review found no outstanding blocker/required after kernel fixes.
+Protected matching-branch CI, Codex bot review, merge and Issue/Project settlement
+are recorded in #15 and its PR; local validation alone is not the delivery gate.
 
 ## Retained S1 feature backlog
 
@@ -94,11 +99,7 @@ dependencies remain; #11 still has no start dependency. Scheduling deferral
 is neither technical blockage nor completion. The S1 above remains the retained
 feature scope; it does not automatically start that feature work.
 
-Kernel #256 now has revised Float32 image, ordinary-scalar and per-port
-contracts; its concrete operation ABI v3 has been accepted. #10 remains
-dependent on the kernel contract; Session/wire rules are unchanged. Kernel 0.3
-requires minimal coordinated consumer/package maintenance or a separately
-approved supported-version/CI-selection policy. Deferring new IPC features
-does not waive that maintenance. No code, versions or CI changed. Decision
-delivery is tracked in [kernel #256](https://github.com/kevin-zf1123/photospider/issues/256);
-implementation and new daemon features remain separate tasks.
+Kernel ADR 0016 supplies the accepted binding/image contract; ADR 0017 supplies
+S2 regional execution and storage. This maintenance consumes installed 0.4.
+#10/#11/#12 remain separately scoped decisions and implementation, and are not
+closed by compatibility maintenance.
