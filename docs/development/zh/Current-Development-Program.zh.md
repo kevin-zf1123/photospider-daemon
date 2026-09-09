@@ -88,3 +88,7 @@ Audited baseline、当前 milestone、critical path 或 blocked reason 变化时
 
 Kernel ADR 0016 提供已接受的 binding/image 契约，ADR 0017 提供 S2 区域执行与存储。
 本次维护消费安装的 0.4。#10/#11/#12 继续由独立决策和实现范围推进，不因兼容维护而关闭。
+
+## S3 kernel 0.5 消费
+
+[Issue #17](https://github.com/kevin-zf1123/photospider-daemon/issues/17) 更新安装依赖和版本检查到 kernel 0.5；现有 IPC v3 子集和 daemon 0.2 包保持。S3 快照、缓存及应用预览策略不进入 IPC。受保护合并依赖 kernel S3 #268，实际验证与结算记录在 Issue。

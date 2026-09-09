@@ -23,7 +23,7 @@ if(PHOTOSPIDER_DAEMON_ENABLE_ASAN AND PHOTOSPIDER_DAEMON_ENABLE_TSAN)
   message(FATAL_ERROR "daemon ASAN and TSAN cannot be enabled together")
 endif()
 
-find_package(Photospider 0.4 CONFIG REQUIRED COMPONENTS kernel)
+find_package(Photospider 0.5 CONFIG REQUIRED COMPONENTS kernel)
 find_package(Threads REQUIRED)
 
 set(

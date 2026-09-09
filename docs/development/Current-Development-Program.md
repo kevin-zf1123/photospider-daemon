@@ -103,3 +103,7 @@ Kernel ADR 0016 supplies the accepted binding/image contract; ADR 0017 supplies
 S2 regional execution and storage. This maintenance consumes installed 0.4.
 #10/#11/#12 remain separately scoped decisions and implementation, and are not
 closed by compatibility maintenance.
+
+## S3 kernel 0.5 consumption
+
+[Issue #17](https://github.com/kevin-zf1123/photospider-daemon/issues/17) updates the installed dependency and version probes to kernel 0.5. The existing IPC v3 subset and daemon 0.2 package remain. Kernel S3 snapshots, caches and application preview policy are not added to IPC. Protected merge follows kernel S3 #268; live validation and settlement belong to the Issue.
