@@ -139,9 +139,10 @@ function(photospider_check_package_version package_name requested_version
   endif()
 endfunction()
 
-photospider_check_package_version(Photospider 0.5 compatible)
+photospider_check_package_version(Photospider 0.6 compatible)
 photospider_check_package_version(Photospider 0.2 incompatible)
 photospider_check_package_version(Photospider 0.4 incompatible)
+photospider_check_package_version(Photospider 0.5 incompatible)
 foreach(_package_name IN ITEMS PhotospiderDaemon)
   photospider_check_package_version("${_package_name}" 0.2 compatible)
   photospider_check_package_version("${_package_name}" 0.1 incompatible)
