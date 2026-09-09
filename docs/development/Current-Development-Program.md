@@ -1,8 +1,8 @@
 # Current Development Program
 
 - Snapshot date: 2026-09-09
-- Audited baseline: settled S2 `main@2468cfe`; S3 kernel 0.5 consumer implemented in `dd7f40e`
-- Current focus: kernel 0.5 installed consumption; new IPC features remain demand-driven
+- Audited baseline: settled S3 `main@8816f85`
+- Current focus: kernel 0.6 installed consumption; new IPC features remain demand-driven
 
 ## Role and authority
 
@@ -108,6 +108,13 @@ is neither technical blockage nor completion. The S1 above remains the retained
 feature scope; it does not automatically start that feature work.
 
 Kernel ADR 0016 supplies the accepted binding/image contract; ADR 0017 supplies
-S2 regional execution and storage. Current S3 maintenance consumes installed 0.5.
+S2 regional execution and storage. Current S4 maintenance consumes installed 0.6.
 #10/#11/#12 remain separately scoped decisions and implementation, and are not
 closed by compatibility maintenance.
+
+## S4 kernel 0.6 consumption
+
+[Issue #19](https://github.com/kevin-zf1123/photospider-daemon/issues/19) updates installed
+dependencies and version probes to 0.6 and maps existing allow_gpu to explicit
+MetalFp32/CpuExact planning. IPC v3 and daemon 0.2 remain unchanged. Settlement
+follows kernel S4 #279; Issues own validation and merge status.

@@ -23,7 +23,7 @@ Daemon CI：
 3. 只使用该 prefix 配置 daemon；
 4. build、运行 CTest、install、运行 external typed-client consumer，并在清除所有受支持
    loader environment override 后执行 installed `photospiderd --help`；同一 isolated
-   install 接受 kernel `0.5` request，拒绝 kernel `0.2`/`0.4` request。Daemon package
+   install 接受 kernel `0.6` request，拒绝 kernel `0.2`/`0.4`/`0.5` request。Daemon package
    probe 独立接受 `0.2`，拒绝 `0.1`/`0.3`，不随 kernel version 改变；
 5. 运行 binary-codec、socket ownership/SIGPIPE、real-process signal 与 RPC shutdown、
    Session/Job/cancellation/result/restart、executable-help 与 installed-client test；

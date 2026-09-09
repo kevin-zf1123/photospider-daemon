@@ -36,7 +36,7 @@ production archive or the test variant, never both, so the two private class
 definitions cannot create ODR or duplicate-symbol ambiguity.
 
 The producer discovers the exact supported Photospider 0.x package through
-`find_package(Photospider 0.5 CONFIG REQUIRED COMPONENTS kernel)`. Package
+`find_package(Photospider 0.6 CONFIG REQUIRED COMPONENTS kernel)`. Package
 version updates are deliberate breaking-compatibility work and must pass the
 isolated consumer gate.
 
@@ -55,12 +55,18 @@ The pre-reset daemon commit
 `pre-breaking-scope-reset-2026-09-01`. It is historical source only and does
 not constrain the v3 package or wire.
 
-## Kernel 0.5 consumption
+## Kernel 0.6 consumption
 
-The daemon and Client rebuild against installed kernel 0.5. Kernel schema 2
+The daemon and Client rebuild against installed kernel 0.6. Kernel schema 2
 node-output-only workflows use explicit empty execution bindings. IPC v3 and
 the daemon 0.2 package version remain; kernel ABI/Value ownership changes do
 not add input bindings or bulk/streamed results to this protocol. Codec inputs
 with declarations or workflow-input references fail instead of losing fields.
 Value byte views are copied synchronously into the existing bounded frame;
 nonzero storage origins and Float32 remain outside the v3 wire subset.
+
+The existing `allow_gpu` option selects `ExecutionMode::MetalFp32` when
+daemon GPU execution is enabled, otherwise `CpuExact`. Device discovery,
+controlled Float32 semantics, CPU fallback and native completion belong to
+the kernel. IPC v3 gains no mode field, native handles or workflow inputs;
+the daemon package remains 0.2.

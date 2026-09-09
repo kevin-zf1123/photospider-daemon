@@ -655,6 +655,8 @@ class JobRegistry final {
    * @throws Nothing across the worker boundary.
    * @note Cancellation is rechecked before compilation, before execution, and
    * before result publication. IPC v3 supplies no runtime bindings.
+   * Its existing allow_gpu option selects explicit MetalFp32 when enabled;
+   * the kernel owns device discovery, numerical fallback and completion.
    * The noninstalled test runtime may hold the
    * boundary after Running publication without changing production objects.
    */
@@ -684,7 +686,8 @@ class JobRegistry final {
 
       const bool allow_gpu = gpu_enabled_ && record->options.allow_gpu;
       PlanningOptions planning;
-      planning.allow_gpu = allow_gpu;
+      planning.execution_mode =
+          allow_gpu ? ExecutionMode::MetalFp32 : ExecutionMode::CpuExact;
       auto compiled = compiler_->compile(*record->graph, planning);
       if (!compiled.ok()) {
         finish_failure(record, compiled.status());

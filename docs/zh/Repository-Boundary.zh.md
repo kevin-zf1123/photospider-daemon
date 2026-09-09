@@ -31,7 +31,7 @@ exception controller 与 cleanup count 只存在于该 variant。每个 test exe
 只能链接 production archive 或 test variant，绝不同时链接二者，因此两个 private
 class definition 不会产生 ODR 或 duplicate-symbol 歧义。
 
-Producer 通过 `find_package(Photospider 0.5 CONFIG REQUIRED COMPONENTS kernel)` 发现
+Producer 通过 `find_package(Photospider 0.6 CONFIG REQUIRED COMPONENTS kernel)` 发现
 精确支持的 Photospider 0.x package。Package version update 是有意的 breaking-
 compatibility work，必须通过隔离 consumer gate。
 
@@ -48,10 +48,14 @@ authentication、tenant、process worker、recovery 或 durable state product。
 tag `pre-breaking-scope-reset-2026-09-01` 保存。它只是历史 source，不约束 v3
 package 或 wire。
 
-## Kernel 0.5 消费
+## Kernel 0.6 消费
 
-daemon 和 Client 针对安装后的 kernel 0.5 重新构建。Kernel schema 2 的纯节点输出
+daemon 和 Client 针对安装后的 kernel 0.6 重新构建。Kernel schema 2 的纯节点输出
 workflow 使用显式空 execution bindings。保留 IPC v3 和 daemon package 0.2；
 kernel ABI/Value 所有权变化不增加输入绑定、bulk 或流式结果协议。带 declaration 或
 workflow-input reference 的编解码输入明确失败，不丢弃字段。Value 字节视图同步复制
 到现有有界 frame；非零 storage origin 和 Float32 仍不属于 v3 wire 子集。
+
+现有 `allow_gpu` 在 daemon GPU 启用时选择 `ExecutionMode::MetalFp32`；否则选择
+`CpuExact`。设备探测、受控 Float32 语义、CPU 回退和原生完成归 kernel 所有。
+IPC v3 不增加模式字段、原生句柄或工作流输入，daemon package 保持 0.2。

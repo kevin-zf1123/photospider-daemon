@@ -1,8 +1,8 @@
 # 当前开发计划
 
 - 快照日期：2026-09-09
-- 已审计基线：已结算 S2 `main@2468cfe`；S3 kernel 0.5 消费实现在 `dd7f40e`
-- 当前重点：kernel 0.5 安装消费；新 IPC 功能继续按需启动
+- 已审计基线：已结算 S3 `main@8816f85`
+- 当前重点：kernel 0.6 安装消费；新 IPC 功能继续按需启动
 
 ## 角色与权威
 
@@ -95,4 +95,10 @@ Audited baseline、当前 milestone、critical path 或 blocked reason 变化时
 或完成。上文 S1 继续描述保留的功能范围，当前不自动启动这些新增功能。
 
 Kernel ADR 0016 提供已接受的 binding/image 契约，ADR 0017 提供 S2 区域执行与存储。
-当前 S3 维护消费安装的 0.5。#10/#11/#12 继续由独立决策和实现范围推进，不因兼容维护而关闭。
+当前 S4 维护消费安装的 0.6。#10/#11/#12 继续由独立决策和实现范围推进，不因兼容维护而关闭。
+
+## S4 kernel 0.6 消费
+
+[Issue #19](https://github.com/kevin-zf1123/photospider-daemon/issues/19) 更新安装依赖与
+版本探针到 0.6，并将现有 allow_gpu 映射到显式 MetalFp32/CpuExact 规划。
+IPC v3 和 daemon 0.2 保持。kernel S4 #279 合并后才能结算；验证与合并状态以 Issue 为准。
