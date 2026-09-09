@@ -23,9 +23,9 @@ Daemon CI:
 3. configures the daemon using only that prefix;
 4. builds, runs CTest, installs, runs an external typed-client consumer, and
    executes the installed `photospiderd --help` with every supported loader
-   environment override removed; the same isolated install accepts exact-minor
-   `0.2` package requests and rejects cross-minor `0.1` plus newer-minimum
-   `0.3` requests for both packages;
+   environment override removed; the same isolated install accepts kernel
+   `0.5` requests and rejects kernel `0.2`/`0.4` requests. Daemon package probes
+   accept `0.2` and reject `0.1`/`0.3`, independently of the kernel version;
 5. runs binary-codec, socket ownership/SIGPIPE, real-process signal and RPC
    shutdown, Session/Job/cancellation/result/restart, executable-help, and
    installed-client tests; and

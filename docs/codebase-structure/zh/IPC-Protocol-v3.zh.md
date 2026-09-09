@@ -305,9 +305,9 @@ credential 仍是 same-user acceptance check，host 会拒绝 non-owner peer。P
 
 这些是 local correctness property，不是 remote-service 或 persistent-state claim。
 
-### Kernel 0.4 编解码适配
+### Kernel 0.5 编解码适配
 
-安装后的 kernel 0.4 要求 WorkflowDocument schema 2。IPC v3 保留纯 node-output edge
+安装后的 kernel 0.5 要求 WorkflowDocument schema 2。IPC v3 保留纯 node-output edge
 子集；encoder 拒绝 workflow input declaration/reference，执行使用空 bindings。
 旧 schema 由 Compiler 拒绝。结果 wire 保留 UInt8/Int64/Float64 与零 storage origin；
 非零 origin 和 Float32 在 encode 时明确拒绝。ByteView 所有权留在本地，其字节在 encode

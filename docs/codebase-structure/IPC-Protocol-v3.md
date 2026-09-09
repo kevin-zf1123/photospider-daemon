@@ -139,7 +139,7 @@ nodes, operation keys, ordered node-output edges, tagged scalar parameters, and 
 outputs. The daemon decodes source only, creates `GraphContext`, and validates
 it through the installed public `Compiler`. It never serializes semantic IR,
 optimized IR, physical plan fields, callback/native handles, or DSO paths.
-The installed 0.4 kernel requires schema 2. This wire subset has no workflow
+The installed 0.5 kernel requires schema 2. This wire subset has no workflow
 input declarations or runtime bindings; the encoder rejects either source
 form rather than silently omitting it. Compiler validation rejects old schemas.
 
