@@ -9,7 +9,7 @@ endif()
 if(PS_VERSION_PROBE_PACKAGE STREQUAL "Photospider")
   find_package(Photospider ${PS_VERSION_PROBE_VERSION} CONFIG QUIET
                COMPONENTS kernel)
-  set(_expected_version "0.4.0")
+  set(_expected_version "0.5.0")
   set(_probe_found "${Photospider_FOUND}")
   set(_probe_version "${Photospider_VERSION}")
   set(_probe_versions "${Photospider_CONSIDERED_VERSIONS}")
