@@ -1,8 +1,8 @@
 # 当前开发计划
 
 - 快照日期：2026-09-09
-- 已审计实现 baseline：`53ec2ca`（安装 kernel 0.4），前序 main 为 `b2babab`
-- 当前重点：kernel 0.4 安装消费；新 IPC 功能继续按需启动
+- 已审计基线：已结算 S2 `main@2468cfe`；S3 kernel 0.5 消费实现在 `dd7f40e`
+- 当前重点：kernel 0.5 安装消费；新 IPC 功能继续按需启动
 
 ## 角色与权威
 
@@ -22,7 +22,7 @@ authority，也不构成 completion gate。
 S0 的 #2/#3/#4 已结算：九方法 IPC v3、受限 Session/Job 生命周期、取消、释放、
 shutdown/restart loss 和隔离安装消费继续作为基线。
 
-## Kernel 0.4 消费维护
+## 已结算 S2 kernel 0.4 消费维护
 
 [#15](https://github.com/kevin-zf1123/photospider-daemon/issues/15) 在 53ec2ca 实现，
 位于 kernel S2 #263/#264/#210/#211/#265/#266 之后。Daemon/Client 针对安装的 kernel
@@ -35,6 +35,14 @@ Static kernel 验证通过全部 14 项 runtime 加修复后的安装消费者�
 边界、loader path，以及独立的 kernel/daemon minor-version probe。两仓独立审查在
 kernel 修复后未发现剩余 blocker/required。受保护 matching-branch CI、Codex bot、
 合并和 Issue/Project 结算记录在 #15 及其 PR；本地验证不单独构成交付 gate。
+
+## S3 kernel 0.5 消费
+
+[Issue #17](https://github.com/kevin-zf1123/photospider-daemon/issues/17) 更新安装依赖和版本检查到 kernel 0.5；现有 IPC v3 子集和 daemon 0.2 包保持。S3 快照、缓存及应用预览策略不进入 IPC。受保护合并依赖 kernel S3 #268，实际验证与结算记录在 Issue。
+
+静态和共享的 kernel 0.5 安装消费验证均通过 15/15 CTest。
+[PR #18](https://github.com/kevin-zf1123/photospider-daemon/pull/18) 记录当前提交的
+CI、Codex bot 审查和 package probe 文档修正。
 
 ## 保留的 S1 功能范围
 
@@ -87,8 +95,4 @@ Audited baseline、当前 milestone、critical path 或 blocked reason 变化时
 或完成。上文 S1 继续描述保留的功能范围，当前不自动启动这些新增功能。
 
 Kernel ADR 0016 提供已接受的 binding/image 契约，ADR 0017 提供 S2 区域执行与存储。
-本次维护消费安装的 0.4。#10/#11/#12 继续由独立决策和实现范围推进，不因兼容维护而关闭。
-
-## S3 kernel 0.5 消费
-
-[Issue #17](https://github.com/kevin-zf1123/photospider-daemon/issues/17) 更新安装依赖和版本检查到 kernel 0.5；现有 IPC v3 子集和 daemon 0.2 包保持。S3 快照、缓存及应用预览策略不进入 IPC。受保护合并依赖 kernel S3 #268，实际验证与结算记录在 Issue。
+当前 S3 维护消费安装的 0.5。#10/#11/#12 继续由独立决策和实现范围推进，不因兼容维护而关闭。

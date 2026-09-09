@@ -1,8 +1,8 @@
 # Current Development Program
 
 - Snapshot date: 2026-09-09
-- Audited implementation baseline: `53ec2ca` (installed kernel 0.4), following `main@b2babab`
-- Current focus: kernel 0.4 installed consumption; new IPC features remain demand-driven
+- Audited baseline: settled S2 `main@2468cfe`; S3 kernel 0.5 consumer implemented in `dd7f40e`
+- Current focus: kernel 0.5 installed consumption; new IPC features remain demand-driven
 
 ## Role and authority
 
@@ -24,7 +24,7 @@ S0 Issues #2, #3 and #4 are settled: nine-method IPC v3, bounded Session/Job
 lifecycle, cancellation, release, shutdown/restart loss and isolated installed
 consumption remain the baseline.
 
-## Kernel 0.4 consumer maintenance
+## Settled S2 kernel 0.4 consumer maintenance
 
 [#15](https://github.com/kevin-zf1123/photospider-daemon/issues/15) is implemented
 in `53ec2ca`, following kernel S2 #263/#264/#210/#211/#265/#266. The daemon and
@@ -41,6 +41,14 @@ fences, loader paths and separate kernel/daemon minor-version probes. Independen
 two-repository review found no outstanding blocker/required after kernel fixes.
 Protected matching-branch CI, Codex bot review, merge and Issue/Project settlement
 are recorded in #15 and its PR; local validation alone is not the delivery gate.
+
+## S3 kernel 0.5 consumption
+
+[Issue #17](https://github.com/kevin-zf1123/photospider-daemon/issues/17) updates the installed dependency and version probes to kernel 0.5. The existing IPC v3 subset and daemon 0.2 package remain. Kernel S3 snapshots, caches and application preview policy are not added to IPC. Protected merge follows kernel S3 #268; live validation and settlement belong to the Issue.
+
+Static/shared installed kernel 0.5 validation passed 15/15 CTest in each configuration.
+[PR #18](https://github.com/kevin-zf1123/photospider-daemon/pull/18) records current-head
+CI, Codex bot review and the documentation corrections to the package probes.
 
 ## Retained S1 feature backlog
 
@@ -100,10 +108,6 @@ is neither technical blockage nor completion. The S1 above remains the retained
 feature scope; it does not automatically start that feature work.
 
 Kernel ADR 0016 supplies the accepted binding/image contract; ADR 0017 supplies
-S2 regional execution and storage. This maintenance consumes installed 0.4.
+S2 regional execution and storage. Current S3 maintenance consumes installed 0.5.
 #10/#11/#12 remain separately scoped decisions and implementation, and are not
 closed by compatibility maintenance.
-
-## S3 kernel 0.5 consumption
-
-[Issue #17](https://github.com/kevin-zf1123/photospider-daemon/issues/17) updates the installed dependency and version probes to kernel 0.5. The existing IPC v3 subset and daemon 0.2 package remain. Kernel S3 snapshots, caches and application preview policy are not added to IPC. Protected merge follows kernel S3 #268; live validation and settlement belong to the Issue.
